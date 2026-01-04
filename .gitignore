@@ -139,3 +139,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+.claude/
+env/
+results/
+output/
+examples/
+example/
