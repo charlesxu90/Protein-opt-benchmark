@@ -69,22 +69,164 @@ except ImportError:
     WANDB_AVAILABLE = False
     warnings.warn("wandb not available, logging will be disabled")
 
-# Import unified metrics from utils.compat
-UTILS_PATH = os.path.join(os.path.dirname(__file__), '..')
-sys.path.insert(0, UTILS_PATH)
-from utils.compat import (
-    compute_all_metrics,
-    aggregate_run_metrics,
-    load_landscape_data,
-    MetricsResult,
-    hamming_distance,
-    high_fitness_proximity,
-    novelty,
-    batch_diversity,
-    normalized_fitness_topk,
-    max_fitness as compute_max_fitness,
-    simple_regret,
-)
+# Import unified metrics directly from Benchmark utils/metrics.py
+# Using importlib to avoid local utils shadowing
+import importlib.util
+BENCHMARK_UTILS_PATH = "/home/xux/Desktop/AlphaVariant/Benchmark/utils"
+
+# Load metrics module
+spec_metrics = importlib.util.spec_from_file_location("benchmark_metrics", os.path.join(BENCHMARK_UTILS_PATH, "metrics.py"))
+benchmark_metrics = importlib.util.module_from_spec(spec_metrics)
+spec_metrics.loader.exec_module(benchmark_metrics)
+
+# Extract the needed functions from metrics module
+hamming_distance = benchmark_metrics.hamming_distance
+high_fitness_proximity = benchmark_metrics.high_fitness_proximity_from_landscape
+novelty = benchmark_metrics.novelty
+batch_diversity = benchmark_metrics.batch_diversity
+normalized_fitness_topk = benchmark_metrics.normalized_fitness_median_topk
+compute_max_fitness = benchmark_metrics.max_fitness
+simple_regret = benchmark_metrics.simple_regret
+spearman_correlation = benchmark_metrics.spearman_correlation
+
+# Create a simple MetricsResult dataclass
+from dataclasses import dataclass, field
+from typing import List, Dict
+
+@dataclass
+class MetricsResult:
+    high_fitness_proximity: float = 0.0
+    novelty: float = 0.0
+    batch_diversity: float = 0.0
+    normalized_fitness_median_top128: float = 0.0
+    normalized_fitness_median_top256: float = 0.0
+    max_fitness: float = 0.0
+    spearman_correlation: float = 0.0
+    epistatic_correlation: float = 0.0
+    recall_high_order: float = 0.0
+    simple_regret: float = 0.0
+    global_max_found: bool = False
+    miscalibration_area: float = 1.0
+    expected_calibration_error: float = 1.0
+    regret_trajectory: List[float] = field(default_factory=list)
+    fitness_trajectory: List[float] = field(default_factory=list)
+
+    def to_dict(self) -> Dict:
+        return {
+            'high_fitness_proximity': self.high_fitness_proximity,
+            'novelty': self.novelty,
+            'batch_diversity': self.batch_diversity,
+            'normalized_fitness_median_top128': self.normalized_fitness_median_top128,
+            'normalized_fitness_median_top256': self.normalized_fitness_median_top256,
+            'max_fitness': self.max_fitness,
+            'spearman_correlation': self.spearman_correlation,
+            'epistatic_correlation': self.epistatic_correlation,
+            'recall_high_order': self.recall_high_order,
+            'simple_regret': self.simple_regret,
+            'global_max_found': self.global_max_found,
+            'miscalibration_area': self.miscalibration_area,
+            'expected_calibration_error': self.expected_calibration_error,
+        }
+
+def compute_all_metrics(queried_indices, all_sequences, all_fitness, initial_indices, batch_size=96, wildtype=None):
+    """Compute all metrics for an optimization run."""
+    result = MetricsResult()
+
+    queried_indices = np.array(queried_indices).astype(int)
+    initial_indices = np.array(initial_indices).astype(int)
+
+    queried_seqs = [all_sequences[i] for i in queried_indices]
+    initial_seqs = [all_sequences[i] for i in initial_indices]
+    queried_fitness = all_fitness[queried_indices]
+
+    global_max = float(np.max(all_fitness))
+    global_min = float(np.min(all_fitness))
+
+    result.high_fitness_proximity = high_fitness_proximity(
+        queried_seqs, all_sequences, all_fitness,
+        percentile=0.9, distance_fn='hamming'
+    )
+
+    non_initial_seqs = queried_seqs[len(initial_indices):]
+    if non_initial_seqs:
+        result.novelty = novelty(non_initial_seqs, initial_seqs, distance_fn='hamming')
+
+    result.batch_diversity = batch_diversity(queried_seqs, distance_fn='hamming')
+    result.normalized_fitness_median_top128 = normalized_fitness_topk(
+        queried_fitness, k=128, fitness_min=global_min, fitness_max=global_max
+    )
+    result.normalized_fitness_median_top256 = normalized_fitness_topk(
+        queried_fitness, k=256, fitness_min=global_min, fitness_max=global_max
+    )
+    result.max_fitness = compute_max_fitness(queried_fitness)
+    result.simple_regret = simple_regret(result.max_fitness, global_max)
+    result.global_max_found = (result.max_fitness >= global_max * 0.99)
+
+    fitness_traj = []
+    for i in range(0, len(queried_fitness), batch_size):
+        batch_fitness = queried_fitness[:i + batch_size]
+        fitness_traj.append(float(np.max(batch_fitness)))
+    result.fitness_trajectory = fitness_traj
+    result.regret_trajectory = [global_max - f for f in fitness_traj]
+
+    return result
+
+def aggregate_run_metrics(run_results):
+    """Aggregate metrics across multiple runs."""
+    if not run_results:
+        return {}
+
+    metrics_names = [
+        'high_fitness_proximity', 'novelty', 'batch_diversity',
+        'normalized_fitness_median_top128', 'normalized_fitness_median_top256',
+        'max_fitness', 'spearman_correlation', 'epistatic_correlation',
+        'recall_high_order', 'simple_regret', 'miscalibration_area',
+        'expected_calibration_error'
+    ]
+
+    aggregated = {}
+    for name in metrics_names:
+        values = [getattr(r, name) for r in run_results]
+        valid_values = [v for v in values if not np.isnan(v)]
+        if valid_values:
+            aggregated[name] = {
+                'mean': float(np.mean(valid_values)),
+                'std': float(np.std(valid_values)),
+                'min': float(np.min(valid_values)),
+                'max': float(np.max(valid_values))
+            }
+
+    hit_count = sum(1 for r in run_results if r.global_max_found)
+    aggregated['global_max_hit_count'] = {
+        'count': hit_count,
+        'rate': hit_count / len(run_results) if run_results else 0.0
+    }
+
+    return aggregated
+
+def load_landscape_data(protein, data_dir="/home/xux/Desktop/AlphaVariant/Benchmark/data"):
+    """Load complete fitness landscape data."""
+    import pandas as pd
+    file_patterns = [
+        f"{data_dir}/{protein}/data.csv",
+        f"{data_dir}/{protein}/fitness.csv",
+        f"{data_dir}/{protein}.csv",
+    ]
+
+    data_path = None
+    for pattern in file_patterns:
+        if os.path.exists(pattern):
+            data_path = pattern
+            break
+
+    if data_path is None:
+        raise FileNotFoundError(f"No fitness data found for {protein}")
+
+    df = pd.read_csv(data_path)
+    sequences = df['seq'].tolist()
+    fitness = df['fitness'].values
+    return sequences, fitness
+
 ALDE_METRICS_AVAILABLE = True  # Always available now
 
 
@@ -455,16 +597,16 @@ class GFPBufferCallback:
             # 2. novelty
             nov = novelty(seqs, inits, distance_fn='hamming')
             # 3. batch_diversity
-            div = batch_diversity(seqs, distance_fn='hamming', aggregation='median')
+            div = batch_diversity(seqs, distance_fn='hamming')
             # 4. normalized_fitness_median_top128
             norm_fit_128 = normalized_fitness_topk(
                 fitness_values, k=128,
-                min_fitness=self.global_min, max_fitness=self.global_max
+                fitness_min=self.global_min, fitness_max=self.global_max
             )
             # 5. normalized_fitness_median_top256
             norm_fit_256 = normalized_fitness_topk(
                 fitness_256, k=256,
-                min_fitness=self.global_min, max_fitness=self.global_max
+                fitness_min=self.global_min, fitness_max=self.global_max
             )
             # 6. max_fitness
             max_fit = compute_max_fitness(fitness_values)
@@ -623,6 +765,7 @@ def run_single_experiment(
 
     # Set default checkpoints if not provided
     if ved_checkpoint is None:
+        # No pre-trained VED for GFP, use ESM-2 only (non-existent path triggers fallback)
         ved_checkpoint = f"saved/GFP_{level}_VED.pt"
     if oracle_checkpoint is None:
         oracle_checkpoint = "ckpt/GFP/oracle.ckpt"
@@ -857,10 +1000,10 @@ def load_seeds_from_file(filepath: str, num_seeds: int) -> List[int]:
     return seeds
 
 
-def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> None:
+def save_aggregated_results(results: List[Dict[str, Any]], output_path: str, global_max_fitness: float = 1.0) -> None:
     """Save aggregated results across all runs.
 
-    Metrics are aggregated in ALDE order (without global_max_hit_count):
+    Metrics are aggregated in ALDE order:
     1. high_fitness_proximity
     2. novelty
     3. batch_diversity
@@ -873,6 +1016,7 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
     10. simple_regret
     11. miscalibration_area
     12. expected_calibration_error
+    13. global_max_hit_count
     """
     if not results:
         print("No results to aggregate.")
@@ -888,7 +1032,7 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
         print("No metrics to aggregate.")
         return
 
-    # Define metric order (ALDE-aligned, without global_max_hit_count)
+    # Define metric order (ALDE-aligned)
     metric_order = [
         'high_fitness_proximity',
         'novelty',
@@ -916,6 +1060,19 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
                 'max': float(np.max(values)),
             }
 
+    # Compute global_max_hit_count (number of runs that found global max within 1% tolerance)
+    tolerance = 0.01
+    threshold = global_max_fitness * (1 - tolerance)
+    max_fitness_values = [m.get('max_fitness', 0) for m in metrics_list]
+    hit_count = sum(1 for mf in max_fitness_values if mf >= threshold)
+    hit_rate = hit_count / len(metrics_list) if metrics_list else 0.0
+
+    aggregated['global_max_hit_count'] = {
+        'count': hit_count,
+        'rate': float(hit_rate),
+        'n_runs': len(metrics_list),
+    }
+
     # Save
     agg_path = os.path.join(output_path, 'aggregated_results.json')
     with open(agg_path, 'w') as f:
@@ -935,6 +1092,10 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
         if metric in aggregated:
             stats = aggregated[metric]
             print(f"{metric:<40} {stats['mean']:>10.4f} {stats['std']:>10.4f}")
+    # Print global_max_hit_count
+    if 'global_max_hit_count' in aggregated:
+        gm = aggregated['global_max_hit_count']
+        print(f"{'global_max_hit_count':<40} {gm['count']:>10} / {gm['n_runs']:<5} ({gm['rate']*100:.1f}%)")
     print("=" * 70)
     print(f"\nAggregated results saved to: {agg_path}")
 
@@ -1134,7 +1295,8 @@ Examples:
 
     # Aggregate results
     if len(results) > 1 and not args.skip_metrics:
-        save_aggregated_results(results, args.output_path)
+        # GFP_med global max fitness is 1.0 (normalized)
+        save_aggregated_results(results, args.output_path, global_max_fitness=1.0)
 
     # Final summary
     print(f"\n{'='*60}")

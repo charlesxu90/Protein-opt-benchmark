@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-run_GB1.py - Execute delta-Conservative Search optimization on GB1 dataset
+run_GFP_med.py - Execute delta-Conservative Search optimization on GFP_med dataset
 
 Configuration:
     - Model: GFlowNet with MLP
@@ -9,7 +9,7 @@ Configuration:
     - Batch size: 96
     - Rounds: 5 (1 initial + 4 iterations)
 
-Based on delta-Conservative Search method adapted for GB1 protein variant landscape.
+Based on delta-Conservative Search method adapted for GFP medium protein variant landscape.
 Reference: delta-Conservative Search (BioSeq-GFN-AL)
 
 Metrics computed (ALDE-aligned order):
@@ -25,20 +25,19 @@ Metrics computed (ALDE-aligned order):
     10. simple_regret - Gap to global maximum
     11. miscalibration_area - Uncertainty calibration error
     12. expected_calibration_error - ECE metric
-    13. global_max_hit_count - Whether global max was found
 
 Usage:
     # Single run with default seed
-    python run_GB1.py
+    python run_GFP_med.py
 
     # Single run with specific seed
-    python run_GB1.py --seed 42
+    python run_GFP_med.py --seed 42
 
     # Multiple runs with different seeds
-    python run_GB1.py --seeds 42 123 456 789 1000
+    python run_GFP_med.py --seeds 42 123 456 789 1000
 
-    # Use different radius options
-    python run_GB1.py --seed 42 --radius_option adaptive_linear
+    # Use seeds from file
+    python run_GFP_med.py --seed_file ../rand_seeds.txt --num_seeds 50
 """
 
 from __future__ import annotations
@@ -88,7 +87,6 @@ from utils.compat import (
     simple_regret,
     spearman_correlation,
 )
-from utils.metrics import levenshtein_distance
 
 
 # ============================================================================
@@ -96,24 +94,24 @@ from utils.metrics import levenshtein_distance
 # ============================================================================
 
 parser = argparse.ArgumentParser(
-    description="Run delta-Conservative Search optimization on GB1",
+    description="Run delta-Conservative Search optimization on GFP_med",
     formatter_class=argparse.RawDescriptionHelpFormatter
 )
 
 # Paths and logging
-parser.add_argument("--save_path", default='results/GB1_delta_cs.pkl.gz')
-parser.add_argument("--tb_log_dir", default='results/GB1_delta_cs')
-parser.add_argument("--name", default='GB1_delta_cs')
+parser.add_argument("--save_path", default='results/GFP_med_delta_cs.pkl.gz')
+parser.add_argument("--tb_log_dir", default='results/GFP_med_delta_cs')
+parser.add_argument("--name", default='GFP_med_delta_cs')
 parser.add_argument("--data_dir", default='/home/xux/Desktop/AlphaVariant/Benchmark/data',
                     help="Base directory for data files")
 
 # Multi-round settings
-parser.add_argument("--num_rounds", default=5, type=int, help="Number of optimization rounds")
-parser.add_argument("--task", default="gb1", type=str)
+parser.add_argument("--num_rounds", default=15, type=int, help="Number of optimization rounds")
+parser.add_argument("--task", default="gfp_med", type=str)
 parser.add_argument("--num_queries_per_round", default=96, type=int, help="Batch size per round")
 parser.add_argument("--vocab_size", default=20, type=int, help="Number of amino acids")
-parser.add_argument("--max_len", default=4, type=int, help="Sequence length (4 positions in GB1)")
-parser.add_argument("--gen_max_len", default=4, type=int)
+parser.add_argument("--max_len", default=237, type=int, help="Sequence length (GFP is 237 AAs)")
+parser.add_argument("--gen_max_len", default=237, type=int)
 
 # Seeds and randomness
 parser.add_argument("--seed", default=None, type=int, help="Single random seed")
@@ -136,13 +134,11 @@ parser.add_argument("--kappa", default=0.1, type=float, help="UCB kappa paramete
 parser.add_argument("--radius_option", default='adaptive_linear', type=str,
                     choices=['linear', 'adaptive_linear', 'adaptive', 'constant', 'none'],
                     help="Radius scheduling option for delta-CS")
-parser.add_argument("--min_radius", default=0.7, type=float, help="Minimum exploration radius")
-parser.add_argument("--max_radius", default=0.9, type=float, help="Maximum exploration radius")
+parser.add_argument("--min_radius", default=0.4, type=float, help="Minimum exploration radius")
+parser.add_argument("--max_radius", default=0.8, type=float, help="Maximum exploration radius")
 parser.add_argument("--K", default=25, type=int, help="Number of sampling iterations")
 parser.add_argument("--sigma_coeff", default=1.5, type=float, help="Sigma coefficient for adaptive radius")
 parser.add_argument("--rank_coeff", default=0.01, type=float, help="Rank coefficient for weighted sampling")
-parser.add_argument("--exploration_noise_prob", default=0.1, type=float,
-                    help="Probability of random mutation per position to ensure diversity")
 
 # Generator parameters
 parser.add_argument("--gen_learning_rate", default=1e-4, type=float)
@@ -166,7 +162,7 @@ parser.add_argument("--gen_sampling_temperature", default=4., type=float)
 parser.add_argument("--gen_leaf_coef", default=25, type=float)
 parser.add_argument("--gen_data_sample_per_step", default=16, type=int)
 parser.add_argument("--gen_do_pg", default=0, type=int)
-parser.add_argument("--gen_pg_entropy_coef", default=0.5, type=float)
+parser.add_argument("--gen_pg_entropy_coef", default=0.1, type=float)
 parser.add_argument("--gen_do_explicit_Z", default=1, type=int)
 parser.add_argument("--gen_model_type", default="mlp")
 
@@ -187,11 +183,15 @@ parser.add_argument("--proxy_num_dropout_samples", default=25, type=int)
 
 
 # ============================================================================
-# GB1 Oracle and Dataset
+# GFP_med Oracle and Dataset
 # ============================================================================
 
-class GB1Oracle:
-    """Oracle wrapper for GB1 fitness landscape."""
+# GFP wild-type sequence
+GFP_WILDTYPE = "SKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKQHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKIRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYK"
+
+
+class GFPOracle:
+    """Oracle wrapper for GFP_med fitness landscape."""
 
     def __init__(self, data_dir: str = '/home/xux/Desktop/AlphaVariant/Benchmark/data'):
         self.data_dir = data_dir
@@ -199,16 +199,16 @@ class GB1Oracle:
         self.stoi = {aa: idx for idx, aa in enumerate(self.alphabet)}
         self.itos = {idx: aa for idx, aa in enumerate(self.alphabet)}
 
-        # Load GB1 landscape
+        # Load GFP_med landscape
         self._load_landscape()
 
     def _load_landscape(self):
-        """Load the complete GB1 fitness landscape."""
-        data_path = os.path.join(self.data_dir, 'GB1', 'data.csv')
+        """Load the complete GFP_med fitness landscape."""
+        data_path = os.path.join(self.data_dir, 'GFP_med', 'data.csv')
         df = pd.read_csv(data_path)
 
-        # Store complete landscape
-        self.sequences = df['AACombo'].tolist()
+        # Store complete landscape - use 'seq' column for full sequences
+        self.sequences = df['seq'].tolist()
         self.fitness = df['fitness'].values
 
         # Create lookup dictionary for fast access
@@ -219,8 +219,9 @@ class GB1Oracle:
         self.max_fitness = np.max(self.fitness)
         self.min_fitness = np.min(self.fitness)
 
-        print(f"Loaded GB1 landscape: {len(self.sequences)} sequences")
+        print(f"Loaded GFP_med landscape: {len(self.sequences)} sequences")
         print(f"  Fitness range: [{self.min_fitness:.4f}, {self.max_fitness:.4f}]")
+        print(f"  Sequence length: {len(self.sequences[0])}")
 
     def __call__(self, x, return_all=False):
         """Evaluate fitness for sequences."""
@@ -246,10 +247,10 @@ class GB1Oracle:
         return self.sequences, self.fitness
 
 
-class GB1Dataset:
-    """Dataset class for GB1 optimization."""
+class GFPDataset:
+    """Dataset class for GFP_med optimization."""
 
-    def __init__(self, args, oracle: GB1Oracle, init_size: int = 96):
+    def __init__(self, args, oracle: GFPOracle, init_size: int = 96):
         self.args = args
         self.oracle = oracle
         self.rng = np.random.RandomState(args.seed if hasattr(args, 'seed') and args.seed else 42)
@@ -259,16 +260,28 @@ class GB1Dataset:
         self.x_all = np.array([[oracle.stoi[c] for c in seq] for seq in all_seqs])
         self.y_all = all_fitness
 
-        # Initialize with random samples
+        # Initialize with random samples from medium fitness range
         self._initialize_data(init_size)
 
         self.train_added = len(self.train)
         self.val_added = len(self.valid)
 
     def _initialize_data(self, init_size: int):
-        """Initialize training/validation split with random samples."""
+        """Initialize training/validation split with samples from medium fitness range."""
         n_total = len(self.x_all)
-        indices = self.rng.permutation(n_total)[:init_size]
+
+        # Select from medium fitness range (40th-60th percentile)
+        threshold_low = np.percentile(self.y_all, 40)
+        threshold_high = np.percentile(self.y_all, 60)
+        medium_mask = (self.y_all >= threshold_low) & (self.y_all <= threshold_high)
+        medium_indices = np.where(medium_mask)[0]
+
+        # Sample from medium fitness range
+        if len(medium_indices) >= init_size:
+            indices = self.rng.choice(medium_indices, size=init_size, replace=False)
+        else:
+            # Fall back to random if not enough medium fitness samples
+            indices = self.rng.permutation(n_total)[:init_size]
 
         x_init = self.x_all[indices]
         y_init = self.y_all[indices]
@@ -371,22 +384,23 @@ class GB1Dataset:
 
 
 # ============================================================================
-# GB1 Tokenizer
+# GFP Tokenizer
 # ============================================================================
 
-class GB1Vocab:
-    """Vocabulary for GB1 amino acids."""
+class GFPVocab:
+    """Vocabulary for GFP amino acids."""
     def __init__(self):
         self.alphabet = list('ACDEFGHIKLMNPQRSTVWY')
         self.stoi = {aa: idx for idx, aa in enumerate(self.alphabet)}
         self.itos = {idx: aa for idx, aa in enumerate(self.alphabet)}
 
 
-class GB1Tokenizer:
-    """Tokenizer for GB1 sequences."""
-    def __init__(self):
-        self.vocab = GB1Vocab()
+class GFPTokenizer:
+    """Tokenizer for GFP sequences."""
+    def __init__(self, max_len=237):
+        self.vocab = GFPVocab()
         self.eos_token = None  # No EOS for fixed-length sequences
+        self.max_len = max_len
 
     def process(self, x):
         """Convert sequences to tensor indices."""
@@ -414,9 +428,9 @@ class GB1Tokenizer:
         return self.vocab.itos
 
 
-def get_gb1_tokenizer():
-    """Create tokenizer for GB1."""
-    return GB1Tokenizer()
+def get_gfp_tokenizer(max_len=237):
+    """Create tokenizer for GFP."""
+    return GFPTokenizer(max_len=max_len)
 
 
 # ============================================================================
@@ -431,13 +445,11 @@ def get_current_radius(iter: int, round: int, args, rs=None, y=None, sigma=None)
     elif args.radius_option == 'adaptive_linear':
         linear_r = (args.max_radius - args.min_radius) * ((round + 1) / args.num_rounds) + args.min_radius
         linear_r = linear_r * torch.ones(rs.size(0)).to(rs.device)
-        # Use min_radius as lower clamp to ensure GFlowNet can explore
-        return (linear_r - args.sigma_coeff * sigma.view(-1)).clamp(args.min_radius, 1)
+        return (linear_r - args.sigma_coeff * sigma.view(-1)).clamp(0.1, 1)
 
     elif args.radius_option == 'adaptive':
         base_r = args.max_radius * torch.ones(rs.size(0)).to(rs.device)
-        # Use min_radius as lower clamp to ensure GFlowNet can explore
-        return (base_r - args.sigma_coeff * sigma.view(-1)).clamp(args.min_radius, 1)
+        return (base_r - args.sigma_coeff * sigma.view(-1)).clamp(0.1, 1)
 
     elif args.radius_option == 'constant':
         return args.max_radius * torch.ones(rs.size(0)).to(rs.device)
@@ -545,11 +557,7 @@ class RolloutWorker:
         return visited, states, traj_states.tolist(), traj_actions.tolist(), traj_rewards.tolist(), traj_dones.tolist()
 
     def guided_rollout(self, model, guide_seqs, sample_action_prob):
-        """Rollout with delta-CS guidance from existing sequences.
-
-        Enhanced with exploration noise: even when following guide, there's a
-        small chance of random mutation to ensure diversity.
-        """
+        """Rollout with delta-CS guidance from existing sequences."""
         visited = []
         lists = lambda n: [list() for i in range(n)]
         episodes = len(guide_seqs)
@@ -560,9 +568,6 @@ class RolloutWorker:
         traj_dones = lists(episodes)
 
         masked_cnt = torch.zeros(episodes).to(self.device)
-
-        # Exploration noise probability (chance of random mutation even when following guide)
-        exploration_noise_prob = getattr(self.args, 'exploration_noise_prob', 0.1)
 
         for t in range(self.max_len) if episodes > 0 else []:
             x = self.tokenizer.process(states).to(self.device)
@@ -575,22 +580,11 @@ class RolloutWorker:
             cat = Categorical(logits=logits / self.sampling_temperature)
             actions = cat.sample()
 
-            # Apply delta-CS guidance with exploration noise
+            # Apply delta-CS guidance
             guide_actions = torch.tensor(np.array(guide_seqs))[:, t].to(self.device)
             mask = torch.rand(actions.size(0)).to(self.device) > sample_action_prob.view(-1)
             masked_cnt += mask.int()
-
-            # Apply guide actions where mask is True
             actions[mask] = guide_actions.long()[mask]
-
-            # Add exploration noise: randomly mutate some positions even when following guide
-            # This helps prevent exact duplicates and encourages diversity
-            noise_mask = torch.rand(actions.size(0)).to(self.device) < exploration_noise_prob
-            if noise_mask.any():
-                # For positions with noise, sample from uniform distribution over amino acids
-                n_vocab = logits.size(1)
-                random_actions = torch.randint(1, n_vocab, (noise_mask.sum(),)).to(self.device)
-                actions[noise_mask] = random_actions
 
             for i, a in enumerate(actions):
                 if t == self.max_len - 1:
@@ -847,34 +841,26 @@ def construct_proxy(args, tokenizer, dataset=None):
 # Metrics Computation (using unified utils.compat)
 # ============================================================================
 
-def median_pairwise_distances(seqs: List[str], use_levenshtein: bool = True) -> float:
-    """Compute median pairwise distance (Levenshtein or Hamming).
-
-    Uses Levenshtein distance by default to match unified metrics.
-    """
+def mean_pairwise_distances(seqs: List[str]) -> float:
+    """Compute mean pairwise Hamming distance."""
     if len(seqs) < 2:
         return 0.0
     dists = []
-    dist_fn = levenshtein_distance if use_levenshtein else hamming_distance
     for i in range(len(seqs)):
         for j in range(i + 1, len(seqs)):
-            dists.append(dist_fn(seqs[i], seqs[j]))
-    return float(np.median(dists)) if dists else 0.0
+            dists.append(hamming_distance(seqs[i], seqs[j]))
+    return np.mean(dists) if dists else 0.0
 
 
-def median_novelty(seqs: List[str], ref_seqs: List[str], use_levenshtein: bool = True) -> float:
-    """Compute median novelty (minimum distance to reference set).
-
-    Uses Levenshtein distance by default to match unified metrics.
-    """
+def mean_novelty(seqs: List[str], ref_seqs: List[str]) -> float:
+    """Compute mean novelty (minimum distance to reference set)."""
     if not seqs or not ref_seqs:
         return 0.0
-    dist_fn = levenshtein_distance if use_levenshtein else hamming_distance
-    nov = [min(dist_fn(seq, ref) for ref in ref_seqs) for seq in seqs]
-    return float(np.median(nov))
+    nov = [min(hamming_distance(seq, ref) for ref in ref_seqs) for seq in seqs]
+    return np.mean(nov)
 
 
-def epistatic_correlation(seqs: List[str], fitness: np.ndarray, alphabet: str = 'ACDEFGHIKLMNPQRSTVWY') -> float:
+def epistatic_correlation_local(seqs: List[str], fitness: np.ndarray, alphabet: str = 'ACDEFGHIKLMNPQRSTVWY') -> float:
     """Compute epistatic correlation (interaction effects between positions)."""
     if len(seqs) < 10:
         return 0.0
@@ -960,7 +946,7 @@ def expected_calibration_error_local(true_scores: np.ndarray, pred_scores: np.nd
     return float(ece)
 
 
-def compute_metrics(dataset: GB1Dataset, oracle: GB1Oracle, new_batch, round: int,
+def compute_metrics(dataset: GFPDataset, oracle: GFPOracle, new_batch, round: int,
                     proxy_model=None) -> Dict[str, Any]:
     """Compute comprehensive metrics for a round (ALDE-aligned order)."""
     all_seqs, all_fitness = oracle.get_all_data()
@@ -986,14 +972,14 @@ def compute_metrics(dataset: GB1Dataset, oracle: GB1Oracle, new_batch, round: in
     metrics['high_fitness_proximity'] = high_fitness_proximity(
         collected_seqs, all_seqs, all_fitness)
 
-    # 2. novelty (using median and Levenshtein distance to match unified metrics)
+    # 2. novelty
     if len(top128_collected[0]) > 0:
-        metrics['novelty'] = median_novelty(top128_collected[0], ref_seqs)
+        metrics['novelty'] = mean_novelty(top128_collected[0], ref_seqs)
     else:
-        metrics['novelty'] = median_novelty(top128[0], ref_seqs)
+        metrics['novelty'] = mean_novelty(top128[0], ref_seqs)
 
-    # 3. batch_diversity (using median and Levenshtein distance to match unified metrics)
-    metrics['batch_diversity'] = median_pairwise_distances(new_seqs)
+    # 3. batch_diversity
+    metrics['batch_diversity'] = mean_pairwise_distances(new_seqs)
 
     # 4. normalized_fitness_median_top128
     metrics['normalized_fitness_median_top128'] = float(np.median(normalize(top128[1])))
@@ -1012,7 +998,7 @@ def compute_metrics(dataset: GB1Dataset, oracle: GB1Oracle, new_batch, round: in
         np.array(new_scores), np.array(proxy_scores))
 
     # 8. epistatic_correlation
-    metrics['epistatic_correlation'] = epistatic_correlation(
+    metrics['epistatic_correlation'] = epistatic_correlation_local(
         collected_seqs, np.array(collected_scores))
 
     # 9. recall_high_order
@@ -1026,7 +1012,7 @@ def compute_metrics(dataset: GB1Dataset, oracle: GB1Oracle, new_batch, round: in
     if proxy_model is not None and hasattr(proxy_model, 'get_uncertainty'):
         try:
             pred_scores, pred_std = proxy_model.get_uncertainty(new_seqs)
-            metrics['miscalibration_area'] = miscalibration_area(
+            metrics['miscalibration_area'] = miscalibration_area_local(
                 np.array(new_scores), pred_scores, pred_std)
         except:
             metrics['miscalibration_area'] = 0.0
@@ -1037,8 +1023,8 @@ def compute_metrics(dataset: GB1Dataset, oracle: GB1Oracle, new_batch, round: in
     metrics['expected_calibration_error'] = expected_calibration_error_local(
         np.array(new_scores), np.array(proxy_scores))
 
-    # 13. global_max_hit_count
-    metrics['global_max_hit_count'] = int(np.max(top128[1]) >= global_max * 0.99)
+    # 13. global_max_found (for aggregating global_max_hit_count across runs)
+    metrics['global_max_found'] = (metrics['max_fitness'] >= global_max * 0.99)
 
     return metrics
 
@@ -1060,7 +1046,7 @@ def log_overall_metrics(args, dataset, round, new_batch, oracle=None, rst=None):
     top128 = dataset.top_k(128)
     top256 = dataset.top_k(256)
     args.logger.add_scalar("max_fitness", np.max(top128[1]), use_context=False)
-    batch_div = median_pairwise_distances(new_seqs)
+    batch_div = mean_pairwise_distances(new_seqs)
     args.logger.add_scalar("batch_diversity", batch_div, use_context=False)
     args.logger.add_object("top-128-seqs", top128[0])
 
@@ -1068,7 +1054,7 @@ def log_overall_metrics(args, dataset, round, new_batch, oracle=None, rst=None):
 
     ref_seqs, _ = dataset.get_ref_data()
     collected_seqs, collected_scores = dataset.get_all_data()
-    novelty_val = median_novelty(top128[0], ref_seqs)
+    novelty_val = mean_novelty(top128[0], ref_seqs)
 
     # High-fitness proximity
     if oracle is not None:
@@ -1101,7 +1087,7 @@ def log_overall_metrics(args, dataset, round, new_batch, oracle=None, rst=None):
     top128_collected = dataset.top_k_collected(128)
     if len(top128_collected[0]) > 0:
         args.logger.add_scalar("collected_max_fitness", np.max(top128_collected[1]), use_context=False)
-        collected_novelty = median_novelty(top128_collected[0], ref_seqs)
+        collected_novelty = mean_novelty(top128_collected[0], ref_seqs)
 
         print(f"  Collected Max Fitness: {np.max(top128_collected[1]):.4f}")
         print(f"  Collected Novelty: {collected_novelty:.4f}")
@@ -1126,8 +1112,8 @@ def log_overall_metrics(args, dataset, round, new_batch, oracle=None, rst=None):
 # ============================================================================
 
 def train(args, oracle, dataset):
-    """Main training loop for delta-CS on GB1."""
-    tokenizer = get_gb1_tokenizer()
+    """Main training loop for delta-CS on GFP_med."""
+    tokenizer = get_gfp_tokenizer(args.max_len)
     args.logger.set_context("iter_0")
 
     proxy = construct_proxy(args, tokenizer, dataset=dataset)
@@ -1175,7 +1161,7 @@ def train(args, oracle, dataset):
     return all_metrics, rst
 
 
-def run_single_experiment(seed: int, args, output_path: str = "results/GB1_delta_cs/") -> Dict[str, Any]:
+def run_single_experiment(seed: int, args, output_path: str = "results/GFP_med_delta_cs/") -> Dict[str, Any]:
     """Run a single experiment with given seed."""
     # Set seeds
     torch.manual_seed(seed)
@@ -1186,7 +1172,7 @@ def run_single_experiment(seed: int, args, output_path: str = "results/GB1_delta
     args.logger = get_logger(args)
 
     print(f"\n{'='*60}")
-    print(f"Starting delta-CS optimization on GB1")
+    print(f"Starting delta-CS optimization on GFP_med")
     print(f"  Seed: {seed}")
     print(f"  Radius option: {args.radius_option}")
     print(f"  Radius range: [{args.min_radius}, {args.max_radius}]")
@@ -1196,12 +1182,12 @@ def run_single_experiment(seed: int, args, output_path: str = "results/GB1_delta
     print(f"{'='*60}\n")
 
     # Initialize oracle and dataset
-    oracle = GB1Oracle(data_dir=args.data_dir)
-    dataset = GB1Dataset(args, oracle, init_size=args.num_queries_per_round)
+    oracle = GFPOracle(data_dir=args.data_dir)
+    dataset = GFPDataset(args, oracle, init_size=args.num_queries_per_round)
 
     # Initialize wandb
     if args.use_wandb:
-        run = wandb.init(project='delta-cs', group='GB1', config=vars(args), reinit=True)
+        run = wandb.init(project='delta-cs', group='GFP_med', config=vars(args), reinit=True)
         wandb.run.name = f"{args.name}_seed{seed}_{wandb.run.id}"
 
     # Run training
@@ -1234,19 +1220,18 @@ def run_single_experiment(seed: int, args, output_path: str = "results/GB1_delta
         print(f"{'='*60}")
         print(f"  Max Fitness: {final_metrics.get('max_fitness', 0):.4f}")
         print(f"  Simple Regret: {final_metrics.get('simple_regret', 0):.4f}")
-        print(f"  Global Max Found: {final_metrics.get('global_max_found', False)}")
-        print(f"  Top-128 Mean: {final_metrics.get('top_128_mean', 0):.4f}")
+        print(f"  Normalized Fitness Top-128: {final_metrics.get('normalized_fitness_median_top128', 0):.4f}")
         print(f"{'='*60}\n")
 
     # Save results
-    os.makedirs(os.path.join(output_path, 'GB1'), exist_ok=True)
-    metrics_path = os.path.join(output_path, 'GB1', f'metrics_seed{seed}.json')
+    os.makedirs(os.path.join(output_path, 'GFP_med'), exist_ok=True)
+    metrics_path = os.path.join(output_path, 'GFP_med', f'metrics_seed{seed}.json')
     with open(metrics_path, 'w') as f:
         json.dump(result, f, indent=2, default=str)
     print(f"Results saved to: {metrics_path}")
 
     if rst is not None:
-        rst_path = os.path.join(output_path, 'GB1', f'trajectory_seed{seed}.csv')
+        rst_path = os.path.join(output_path, 'GFP_med', f'trajectory_seed{seed}.csv')
         rst.to_csv(rst_path, index=False)
 
     if args.use_wandb:
@@ -1274,7 +1259,6 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str):
         'simple_regret',
         'miscalibration_area',
         'expected_calibration_error',
-        'global_max_hit_count'
     ]
 
     aggregated = {}
@@ -1288,12 +1272,19 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str):
                 'max': float(np.max(values))
             }
 
-    # Global max hit rate
-    hit_count = sum(1 for r in results if r.get('final_metrics', {}).get('global_max_found', False))
-    aggregated['global_max_hit_rate'] = hit_count / len(results)
+    # 13. global_max_hit_count - count how many runs found the global maximum
+    global_max_hits = sum(
+        1 for r in results
+        if 'final_metrics' in r and r['final_metrics'].get('global_max_found', False)
+    )
+    aggregated['global_max_hit_count'] = {
+        'count': global_max_hits,
+        'rate': float(global_max_hits / len(results)) if results else 0.0,
+        'total_runs': len(results)
+    }
 
     # Save
-    agg_path = os.path.join(output_path, 'GB1', 'aggregated_results.json')
+    agg_path = os.path.join(output_path, 'GFP_med', 'aggregated_results.json')
     with open(agg_path, 'w') as f:
         json.dump({
             'aggregated_metrics': aggregated,
@@ -1309,10 +1300,11 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str):
     print(f"{'Metric':<40} {'Mean':>10} {'Std':>10}")
     print("-"*70)
     for name, stats in aggregated.items():
-        if isinstance(stats, dict):
+        if isinstance(stats, dict) and 'mean' in stats:
             print(f"{name:<40} {stats['mean']:>10.4f} {stats['std']:>10.4f}")
-        else:
-            print(f"{name:<40} {stats*100:>9.1f}%")
+    # Print global_max_hit_count separately
+    gm_stats = aggregated.get('global_max_hit_count', {})
+    print(f"{'global_max_hit_count':<40} {gm_stats.get('count', 0):>10} / {gm_stats.get('total_runs', 0):<10} (rate: {gm_stats.get('rate', 0):.4f})")
     print(f"{'='*70}\n")
 
 
@@ -1336,13 +1328,13 @@ def main():
     else:
         seeds = [42]  # Default seed
 
-    print(f"\nRunning delta-CS on GB1 with {len(seeds)} seed(s): {seeds[:5]}{'...' if len(seeds) > 5 else ''}")
+    print(f"\nRunning delta-CS on GFP_med with {len(seeds)} seed(s): {seeds[:5]}{'...' if len(seeds) > 5 else ''}")
     print(f"Radius option: {args.radius_option}")
     print(f"Data directory: {args.data_dir}")
 
     output_path = os.path.dirname(args.save_path)
     if not output_path:
-        output_path = "results/GB1_delta_cs/"
+        output_path = "results/GFP_med_delta_cs/"
 
     # Run experiments
     results = []

@@ -69,9 +69,21 @@ except ImportError:
     WANDB_AVAILABLE = False
     warnings.warn("wandb not available, logging will be disabled")
 
-# Import unified metrics from utils.compat
-UTILS_PATH = os.path.join(os.path.dirname(__file__), '..')
-sys.path.insert(0, UTILS_PATH)
+# Import unified metrics from parent utils.compat
+# We need to temporarily rename local utils to avoid conflict
+import importlib
+PARENT_DIR = os.path.join(os.path.dirname(__file__), '..')
+# Save local utils module reference
+_local_utils = sys.modules.get('utils')
+if 'utils' in sys.modules:
+    del sys.modules['utils']
+# Clear any submodules
+for key in list(sys.modules.keys()):
+    if key.startswith('utils.'):
+        del sys.modules[key]
+# Add parent to path at front
+sys.path.insert(0, PARENT_DIR)
+# Now import from parent utils
 from utils.compat import (
     compute_all_metrics,
     aggregate_run_metrics,
@@ -86,6 +98,10 @@ from utils.compat import (
     max_fitness as compute_max_fitness,
     simple_regret,
 )
+# Restore local utils for any later use
+sys.path.remove(PARENT_DIR)
+if _local_utils is not None:
+    sys.modules['utils'] = _local_utils
 ALDE_METRICS_AVAILABLE = True  # Always available now
 
 
@@ -157,12 +173,13 @@ def create_gb1_opt(args: argparse.Namespace) -> argparse.Namespace:
     opt.max_fitness = GB1_MAX_FITNESS
     opt.step_mut = args.step_mut
 
-    # GB1 specific parameters (similar to AAV due to short sequence)
-    opt.action_size = 0.15  # Perturbation magnitude in latent space
-    opt.topk = 4  # Only 4 mutable positions
+    # GB1 specific parameters
+    # Increased action_size to enable more effective exploration in latent space
+    opt.action_size = 1.0  # Perturbation magnitude in latent space (was 0.15)
+    opt.topk = None  # Allow mutations at any position (was 4)
     opt.done_cond = argparse.Namespace(
-        max_steps=3,
-        max_mutation=4,  # Max 4 mutations (one per mutable position)
+        max_steps=4,  # Allow more steps per episode (was 3)
+        max_mutation=8,  # Allow more mutations (was 4)
         step_mut=opt.step_mut
     )
 
@@ -640,8 +657,23 @@ def run_single_experiment(
     print(f"  Fitness range: [{all_fitness.min():.4f}, {all_fitness.max():.4f}]")
 
     # Set default checkpoints if not provided
+    # VED checkpoint - use saved VED if available, otherwise ESM-2 fallback
     if ved_checkpoint is None:
-        ved_checkpoint = f"saved/GB1_{level}_VED.pt"
+        # Check for trained VED model in order of preference
+        ved_paths = [
+            f"saved/GB1_{level}_LM.pt",  # Best model from training
+            f"saved/GB1_{level}_VED.pt",  # Alternative name
+        ]
+        ved_checkpoint = None
+        for ved_path in ved_paths:
+            if os.path.exists(ved_path):
+                ved_checkpoint = ved_path
+                print(f"  Using trained VED: {ved_path}")
+                break
+        if ved_checkpoint is None:
+            # Fallback to ESM-2 only (will issue warning in GB1OptEnv)
+            ved_checkpoint = ved_paths[0]  # Non-existent path triggers ESM-2 fallback
+            print(f"  WARNING: No trained VED found, will use ESM-2 fallback")
     if oracle_checkpoint is None:
         oracle_checkpoint = "ckpt/GB1/oracle.ckpt"
 
