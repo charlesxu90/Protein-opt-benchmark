@@ -1459,10 +1459,10 @@ def compute_all_metrics(
 
     # --- Functional Metrics ---
     result.normalized_fitness_median_top128 = normalized_fitness_topk(
-        generated_fitness_np, k=128, global_min=global_min, global_max=global_max
+        generated_fitness_np, k=128, min_fitness=global_min, max_fitness=global_max
     )
     result.normalized_fitness_median_top256 = normalized_fitness_topk(
-        generated_fitness_np, k=256, global_min=global_min, global_max=global_max
+        generated_fitness_np, k=256, min_fitness=global_min, max_fitness=global_max
     )
     result.max_fitness = max_fitness_metric(generated_fitness_np)
 
