@@ -1023,12 +1023,9 @@ def compute_metrics(dataset: GFPDataset, oracle: GFPOracle, new_batch, round: in
     metrics['expected_calibration_error'] = expected_calibration_error_local(
         np.array(new_scores), np.array(proxy_scores))
 
-<<<<<<< HEAD
     # 13. global_max_found (for aggregating global_max_hit_count across runs)
     metrics['global_max_found'] = (metrics['max_fitness'] >= global_max * 0.99)
 
-=======
->>>>>>> d899677 (The δ-Conservative Search experiment on GFP_med is now running in the background. Here's a summary:)
     return metrics
 
 
@@ -1275,7 +1272,6 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str):
                 'max': float(np.max(values))
             }
 
-<<<<<<< HEAD
     # 13. global_max_hit_count - count how many runs found the global maximum
     global_max_hits = sum(
         1 for r in results
@@ -1287,8 +1283,6 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str):
         'total_runs': len(results)
     }
 
-=======
->>>>>>> d899677 (The δ-Conservative Search experiment on GFP_med is now running in the background. Here's a summary:)
     # Save
     agg_path = os.path.join(output_path, 'GFP_med', 'aggregated_results.json')
     with open(agg_path, 'w') as f:
@@ -1306,16 +1300,11 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str):
     print(f"{'Metric':<40} {'Mean':>10} {'Std':>10}")
     print("-"*70)
     for name, stats in aggregated.items():
-<<<<<<< HEAD
         if isinstance(stats, dict) and 'mean' in stats:
             print(f"{name:<40} {stats['mean']:>10.4f} {stats['std']:>10.4f}")
     # Print global_max_hit_count separately
     gm_stats = aggregated.get('global_max_hit_count', {})
     print(f"{'global_max_hit_count':<40} {gm_stats.get('count', 0):>10} / {gm_stats.get('total_runs', 0):<10} (rate: {gm_stats.get('rate', 0):.4f})")
-=======
-        if isinstance(stats, dict):
-            print(f"{name:<40} {stats['mean']:>10.4f} {stats['std']:>10.4f}")
->>>>>>> d899677 (The δ-Conservative Search experiment on GFP_med is now running in the background. Here's a summary:)
     print(f"{'='*70}\n")
 
 
