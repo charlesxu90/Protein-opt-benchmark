@@ -60,6 +60,9 @@ from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from collections import deque
 import copy
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
 
 # Add code directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code', 'GB1_PhoQ_task'))
@@ -83,6 +86,9 @@ from utils.compat import (
     normalized_fitness_topk,
     max_fitness,
     simple_regret,
+    spearman_correlation,
+    miscalibration_area,
+    expected_calibration_error,
 )
 
 
@@ -104,6 +110,46 @@ def get_wildtype_sequence(protein: str) -> Optional[str]:
         'GB1': 'VDGV',
     }
     return wildtype_map.get(protein)
+
+
+def epistatic_score_correlation(
+    sequences: List[str],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    wildtype: str
+) -> float:
+    """Compute Spearman correlation for high-order mutants (≥2 mutations from wildtype)."""
+    # Find high-order mutants
+    high_order_mask = np.array([hamming_distance(seq, wildtype) >= 2 for seq in sequences])
+    if np.sum(high_order_mask) < 10:
+        return 0.0
+    return spearman_correlation(y_true[high_order_mask], y_pred[high_order_mask])
+
+
+def recall_high_order_mutants(
+    sequences: List[str],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    wildtype: str,
+    min_mutations: int = 2,
+    top_k: int = 100
+) -> float:
+    """Compute recall of top-k high-order mutants."""
+    # Find high-order mutants
+    high_order_mask = np.array([hamming_distance(seq, wildtype) >= min_mutations for seq in sequences])
+    n_ho = np.sum(high_order_mask)
+    if n_ho < top_k:
+        top_k = max(1, n_ho // 2)
+    if top_k == 0:
+        return 0.0
+
+    ho_indices = np.where(high_order_mask)[0]
+    ho_true = y_true[high_order_mask]
+    ho_pred = y_pred[high_order_mask]
+
+    true_top_k = set(ho_indices[np.argsort(ho_true)[-top_k:]])
+    pred_top_k = set(ho_indices[np.argsort(ho_pred)[-top_k:]])
+    return len(true_top_k & pred_top_k) / len(true_top_k) if true_top_k else 0.0
 
 
 # ============================================================================
@@ -456,27 +502,30 @@ class Net(nn.Module):
 class PolicyValueNet:
     """Policy-value network wrapper."""
 
-    def __init__(self, board_width, board_height, model_file=None, use_gpu=False):
+    def __init__(self, board_width, board_height, model_file=None, use_gpu=False, gpu_device=0):
         self.use_gpu = use_gpu
+        self.gpu_device = gpu_device
         self.board_width = board_width
         self.board_height = board_height
         self.l2_const = 1e-4
 
         if self.use_gpu:
-            self.policy_value_net = Net(board_width, board_height).cuda()
+            self.device = torch.device(f'cuda:{gpu_device}')
+            self.policy_value_net = Net(board_width, board_height).to(self.device)
         else:
+            self.device = torch.device('cpu')
             self.policy_value_net = Net(board_width, board_height)
 
         self.optimizer = optim.Adam(self.policy_value_net.parameters(),
                                     weight_decay=self.l2_const)
 
         if model_file:
-            net_params = torch.load(model_file)
+            net_params = torch.load(model_file, map_location=self.device)
             self.policy_value_net.load_state_dict(net_params)
 
     def policy_value(self, state_batch):
         if self.use_gpu:
-            state_batch = Variable(torch.FloatTensor(state_batch).cuda())
+            state_batch = Variable(torch.FloatTensor(state_batch).to(self.device))
             log_act_probs, value = self.policy_value_net(state_batch)
             act_probs = np.exp(log_act_probs.data.cpu().numpy())
             return act_probs, value.data.cpu().numpy()
@@ -493,7 +542,7 @@ class PolicyValueNet:
 
         if self.use_gpu:
             log_act_probs, value = self.policy_value_net(
-                Variable(torch.from_numpy(current_state)).cuda().float())
+                Variable(torch.from_numpy(current_state)).to(self.device).float())
             act_probs = np.exp(log_act_probs.data.cpu().numpy().flatten())
         else:
             log_act_probs, value = self.policy_value_net(
@@ -506,9 +555,9 @@ class PolicyValueNet:
 
     def train_step(self, state_batch, mcts_probs, winner_batch, lr):
         if self.use_gpu:
-            state_batch = Variable(torch.FloatTensor(state_batch).cuda())
-            mcts_probs = Variable(torch.FloatTensor(mcts_probs).cuda())
-            winner_batch = Variable(torch.FloatTensor(winner_batch).cuda())
+            state_batch = Variable(torch.FloatTensor(state_batch).to(self.device))
+            mcts_probs = Variable(torch.FloatTensor(mcts_probs).to(self.device))
+            winner_batch = Variable(torch.FloatTensor(winner_batch).to(self.device))
         else:
             state_batch = Variable(torch.FloatTensor(state_batch))
             mcts_probs = Variable(torch.FloatTensor(mcts_probs))
@@ -551,7 +600,8 @@ class EvoPlayTrainer:
         seed: int,
         n_playout: int = 30,
         c_puct: int = 10,
-        use_gpu: bool = False
+        use_gpu: bool = False,
+        gpu_device: int = 0
     ):
         self.seq_len = len(start_seq_pool[0])
         self.vocab_size = len(alphabet)
@@ -592,7 +642,7 @@ class EvoPlayTrainer:
         self.update_predictor = 0
         self.remove_list = []
 
-        self.policy_value_net = PolicyValueNet(self.seq_len, self.vocab_size, use_gpu=use_gpu)
+        self.policy_value_net = PolicyValueNet(self.seq_len, self.vocab_size, use_gpu=use_gpu, gpu_device=gpu_device)
         self.mcts_player = MCTSMutater(
             self.policy_value_net.policy_value_fn,
             c_puct=self.c_puct,
@@ -837,7 +887,8 @@ def run_single_experiment(
     run_id: Optional[int] = None,
     compute_metrics: bool = True,
     n_playout: int = 30,
-    use_gpu: bool = False
+    use_gpu: bool = False,
+    gpu_device: int = 0
 ) -> Dict[str, Any]:
     """Run a single EvoPlay experiment on GB1."""
 
@@ -927,7 +978,8 @@ def run_single_experiment(
         fitness=fitness_normalized,
         seed=seed,
         n_playout=n_playout,
-        use_gpu=use_gpu
+        use_gpu=use_gpu,
+        gpu_device=gpu_device
     )
 
     queried_indices, queried_seqs = trainer.run(verbose=verbose)
@@ -1257,6 +1309,29 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
     print("="*70)
 
 
+def run_experiment_wrapper(args_tuple):
+    """Wrapper function for parallel execution."""
+    seed, run_id, config = args_tuple
+    try:
+        result = run_single_experiment(
+            seed=seed,
+            data_dir=config['data_dir'],
+            output_path=config['output_path'],
+            verbose=config['verbose'],
+            run_id=run_id,
+            compute_metrics=config['compute_metrics'],
+            n_playout=config['n_playout'],
+            use_gpu=config['use_gpu'],
+            gpu_device=config['gpu_device']
+        )
+        return result
+    except Exception as e:
+        print(f"Error running experiment with seed {seed}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'seed': seed, 'error': str(e)}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run EvoPlay optimization on GB1 with GP + MCTS + Policy-Value Network",
@@ -1277,6 +1352,9 @@ Examples:
 
   # Skip metrics computation
   python run_GB1.py --seed 42 --skip_metrics
+
+  # Parallel execution with 8 workers using GPU 1
+  python run_GB1.py --seed_file seeds.txt --num_seeds 50 --n_workers 8 --gpu_device 1 --use_gpu
         """
     )
 
@@ -1341,9 +1419,21 @@ Examples:
         help="Use GPU for policy-value network"
     )
     parser.add_argument(
+        "--gpu_device",
+        type=int,
+        default=0,
+        help="GPU device ID to use (default: 0)"
+    )
+    parser.add_argument(
         "--skip_metrics",
         action="store_true",
         help="Skip metrics computation (faster)"
+    )
+    parser.add_argument(
+        "--n_workers",
+        type=int,
+        default=1,
+        help="Number of parallel workers (default: 1, sequential)"
     )
 
     args = parser.parse_args()
@@ -1360,42 +1450,96 @@ Examples:
     else:
         seeds = [64]
 
-    print(f"\nRunning EvoPlay with {len(seeds)} seed(s): {seeds}")
+    print(f"\nRunning EvoPlay with {len(seeds)} seed(s): {seeds[:10]}{'...' if len(seeds) > 10 else ''}")
     print(f"Data directory: {args.data_dir}")
     print(f"Output path: {args.output_path}")
     print(f"Compute metrics: {not args.skip_metrics}")
+    print(f"GPU device: {args.gpu_device if args.use_gpu else 'CPU'}")
+    print(f"Parallel workers: {args.n_workers}")
+
+    # Configuration dict for parallel execution
+    config = {
+        'data_dir': args.data_dir,
+        'output_path': args.output_path,
+        'verbose': args.verbose if args.n_workers == 1 else 0,  # Reduce verbosity in parallel mode
+        'compute_metrics': not args.skip_metrics,
+        'n_playout': args.n_playout,
+        'use_gpu': args.use_gpu,
+        'gpu_device': args.gpu_device,
+    }
+
+    # Prepare arguments for parallel execution
+    experiment_args = [(seed, i + 1, config) for i, seed in enumerate(seeds)]
 
     # Run experiments
     results = []
-    for i, seed in enumerate(seeds):
-        print(f"\n[{i+1}/{len(seeds)}] Running experiment with seed={seed}")
-        result = run_single_experiment(
-            seed=seed,
-            data_dir=args.data_dir,
-            output_path=args.output_path,
-            verbose=args.verbose,
-            run_id=i + 1,
-            compute_metrics=not args.skip_metrics,
-            n_playout=args.n_playout,
-            use_gpu=args.use_gpu
-        )
-        results.append(result)
+    start_time = datetime.now()
+
+    if args.n_workers > 1:
+        # Parallel execution
+        print(f"\nStarting parallel execution with {args.n_workers} workers...")
+
+        # Use spawn method for CUDA compatibility
+        mp.set_start_method('spawn', force=True)
+
+        with ProcessPoolExecutor(max_workers=args.n_workers) as executor:
+            futures = {executor.submit(run_experiment_wrapper, arg): arg[0] for arg in experiment_args}
+
+            completed = 0
+            for future in as_completed(futures):
+                seed = futures[future]
+                completed += 1
+                try:
+                    result = future.result()
+                    results.append(result)
+                    if 'error' not in result:
+                        print(f"[{completed}/{len(seeds)}] Completed seed {seed} - Max fitness: {result.get('metrics', {}).get('max_fitness', 'N/A')}")
+                    else:
+                        print(f"[{completed}/{len(seeds)}] Failed seed {seed}: {result['error']}")
+                except Exception as e:
+                    print(f"[{completed}/{len(seeds)}] Exception for seed {seed}: {e}")
+                    results.append({'seed': seed, 'error': str(e)})
+    else:
+        # Sequential execution
+        for i, seed in enumerate(seeds):
+            print(f"\n[{i+1}/{len(seeds)}] Running experiment with seed={seed}")
+            result = run_single_experiment(
+                seed=seed,
+                data_dir=args.data_dir,
+                output_path=args.output_path,
+                verbose=args.verbose,
+                run_id=i + 1,
+                compute_metrics=not args.skip_metrics,
+                n_playout=args.n_playout,
+                use_gpu=args.use_gpu,
+                gpu_device=args.gpu_device
+            )
+            results.append(result)
+
+    total_time = (datetime.now() - start_time).total_seconds()
+
+    # Filter out failed results for aggregation
+    successful_results = [r for r in results if 'error' not in r]
 
     # Aggregate results if multiple runs
-    if len(results) > 1 and not args.skip_metrics:
-        save_aggregated_results(results, args.output_path)
+    if len(successful_results) > 1 and not args.skip_metrics:
+        save_aggregated_results(successful_results, args.output_path)
 
     # Final summary
     print(f"\n{'='*60}")
     print("Experiment Complete")
     print(f"{'='*60}")
-    print(f"Total runs: {len(results)}")
+    print(f"Total runs: {len(results)} ({len(successful_results)} successful, {len(results) - len(successful_results)} failed)")
+    print(f"Total time: {total_time:.1f} seconds ({total_time/60:.1f} minutes)")
+    print(f"Average time per run: {total_time/len(results):.1f} seconds")
     print(f"Configuration:")
     print(f"  - Model: GP + MCTS + PolicyValueNet")
     print(f"  - Encoding: onehot")
     print(f"  - Initial samples: 96")
     print(f"  - Target samples: 384")
     print(f"  - MCTS playouts: {args.n_playout}")
+    print(f"  - Workers: {args.n_workers}")
+    print(f"  - GPU: {'cuda:' + str(args.gpu_device) if args.use_gpu else 'CPU'}")
     print(f"\nResults saved to: {args.output_path}")
     print(f"{'='*60}\n")
 
