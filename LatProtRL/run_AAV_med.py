@@ -313,7 +313,8 @@ def create_aav_opt(args: argparse.Namespace) -> argparse.Namespace:
 def load_aav_data(
     data_dir: str,
     level: str = 'medium',
-    n_init: int = 96
+    n_init: int = 96,
+    seed: int = 42
 ) -> Tuple[pd.DataFrame, pd.DataFrame, List[str], np.ndarray]:
     """
     Load AAV dataset and prepare training/test splits.
@@ -351,7 +352,7 @@ def load_aav_data(
 
     # Sample initial training set
     if len(train_df) > n_init:
-        train_df = train_df.sample(n=n_init, random_state=42)
+        train_df = train_df.sample(n=n_init, random_state=seed)
 
     # Prepare format compatible with LatProtRL
     train_df = train_df.rename(columns={'seq': 'sequence'})
@@ -752,7 +753,7 @@ def run_single_experiment(
 
     # Load data
     print("Loading AAV data...")
-    train_df, all_df, all_sequences, all_fitness = load_aav_data(data_dir, level, n_init)
+    train_df, all_df, all_sequences, all_fitness = load_aav_data(data_dir, level, n_init, seed)
     print(f"  Training samples: {len(train_df)}")
     print(f"  Total landscape: {len(all_sequences)}")
     print(f"  Fitness range: [{all_fitness.min():.4f}, {all_fitness.max():.4f}]")

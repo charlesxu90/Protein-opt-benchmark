@@ -313,7 +313,8 @@ def create_aav_opt(args: argparse.Namespace) -> argparse.Namespace:
 def load_aav_data(
     data_dir: str,
     level: str = 'hard',
-    n_init: int = 96
+    n_init: int = 96,
+    seed: int = 42
 ) -> Tuple[pd.DataFrame, pd.DataFrame, List[str], np.ndarray]:
     """
     Load AAV dataset and prepare training/test splits.
@@ -350,7 +351,7 @@ def load_aav_data(
 
     # Sample initial training set
     if len(train_df) > n_init:
-        train_df = train_df.sample(n=n_init, random_state=42)
+        train_df = train_df.sample(n=n_init, random_state=seed)
 
     # Prepare format compatible with LatProtRL
     train_df = train_df.rename(columns={'seq': 'sequence'})
