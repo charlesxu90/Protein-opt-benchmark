@@ -752,7 +752,7 @@ def run_single_experiment(
 
     # Load data
     print("Loading AAV data...")
-    train_df, all_df, all_sequences, all_fitness = load_aav_data(data_dir, level, n_init)
+    train_df, all_df, all_sequences, all_fitness = load_aav_data(data_dir, level, n_init, seed)
     print(f"  Training samples: {len(train_df)}")
     print(f"  Total landscape: {len(all_sequences)}")
     print(f"  Fitness range: [{all_fitness.min():.4f}, {all_fitness.max():.4f}]")
