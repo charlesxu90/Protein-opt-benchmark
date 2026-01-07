@@ -147,3 +147,12 @@ output/
 examples/
 example/
 .vscode/
+
+# benchmark methods
+AiCE/
+ALDE/
+alphavariant/
+delta_cs/
+EvoPlay/
+FLEXS/
+LatProtRL/
