@@ -313,8 +313,7 @@ def create_aav_opt(args: argparse.Namespace) -> argparse.Namespace:
 def load_aav_data(
     data_dir: str,
     level: str = 'hard',
-    n_init: int = 96,
-    seed: int = 42
+    n_init: int = 96
 ) -> Tuple[pd.DataFrame, pd.DataFrame, List[str], np.ndarray]:
     """
     Load AAV dataset and prepare training/test splits.
@@ -351,7 +350,7 @@ def load_aav_data(
 
     # Sample initial training set
     if len(train_df) > n_init:
-        train_df = train_df.sample(n=n_init, random_state=seed)
+        train_df = train_df.sample(n=n_init, random_state=42)
 
     # Prepare format compatible with LatProtRL
     train_df = train_df.rename(columns={'seq': 'sequence'})
@@ -752,7 +751,7 @@ def run_single_experiment(
 
     # Load data
     print("Loading AAV data...")
-    train_df, all_df, all_sequences, all_fitness = load_aav_data(data_dir, level, n_init, seed)
+    train_df, all_df, all_sequences, all_fitness = load_aav_data(data_dir, level, n_init)
     print(f"  Training samples: {len(train_df)}")
     print(f"  Total landscape: {len(all_sequences)}")
     print(f"  Fitness range: [{all_fitness.min():.4f}, {all_fitness.max():.4f}]")
@@ -974,9 +973,10 @@ def run_single_experiment(
             json.dump(result, f, indent=2, default=str)
         print(f"\nMetrics saved to: {metrics_path}")
 
-    # Save final sequences
-    np.save(os.path.join(save_dir, 'final_sequences.npy'), final_seqs)
-    np.save(os.path.join(save_dir, 'final_fitness.npy'), final_fitness)
+    # Save final sequences (only if metrics were computed)
+    if compute_metrics and discovered_seqs:
+        np.save(os.path.join(save_dir, 'final_sequences.npy'), final_seqs)
+        np.save(os.path.join(save_dir, 'final_fitness.npy'), final_fitness)
 
     if use_wandb and WANDB_AVAILABLE:
         wandb.finish()
