@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-run_AAV_hard.py - Execute AlphaVariant optimization on AAV hard dataset with comprehensive metrics
+run_GFP_hard.py - Execute AlphaVariant optimization on GFP hard dataset with comprehensive metrics
 
 Configuration:
     - Model: GPT-based generative model
@@ -10,7 +10,7 @@ Configuration:
     - Rounds: 15 (iterative approach)
 
 Iterative Training Process:
-    - Round 1: Initial sampling from low-fitness region (bottom 20th percentile)
+    - Round 1: Initial sampling from medium-fitness region (40th-60th percentile)
     - Rounds 2-15: GPT-guided sampling, get ground truth fitness, update surrogate, train GPT
 
 Metrics computed (from multiple reference works):
@@ -20,19 +20,19 @@ Metrics computed (from multiple reference works):
 
 Usage:
     # Single run with default seed
-    python run_AAV_hard.py
+    python run_GFP_hard.py
 
     # Single run with specific seed
-    python run_AAV_hard.py --seed 42
+    python run_GFP_hard.py --seed 42
 
     # Multiple runs for randomness evaluation
-    python run_AAV_hard.py --seeds 42 123 456 789 1000
+    python run_GFP_hard.py --seeds 42 123 456 789 1000
 
     # Load seeds from file (5 seeds, 96 per round, 15 rounds)
-    python run_AAV_hard.py --seed_file ../rand_seeds.txt --num_seeds 5
+    python run_GFP_hard.py --seed_file ../rand_seeds.txt --num_seeds 5
 
     # Skip metrics computation (faster)
-    python run_AAV_hard.py --seed 42 --skip_metrics
+    python run_GFP_hard.py --seed 42 --skip_metrics
 """
 
 from __future__ import annotations
@@ -86,21 +86,21 @@ from scipy import stats as scipy_stats
 import warnings as metrics_warnings
 
 # =============================================================================
-# AAV Constants
+# GFP Constants
 # =============================================================================
 
-AAV_WILDTYPE = "DEEEIRTTNPVATEQYGSYSTNLQQGNR"
-AAV_LENGTH = 28
+GFP_WILDTYPE = "SKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKQHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKIRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYK"
+GFP_LENGTH = 237
 AMINO_ACIDS = 'ACDEFGHIKLMNPQRSTVWY'
 
 
 # ============================================================================
-# AlphaVariant AAV Iterative Trainer
+# AlphaVariant GFP Iterative Trainer
 # ============================================================================
 
-class IterativeAAVTrainer:
+class IterativeGFPTrainer:
     """
-    Iterative trainer for AAV benchmark following ALDE-style approach.
+    Iterative trainer for GFP benchmark following ALDE-style approach.
 
     Training Process:
     - Round 1: Initial sampling from medium-fitness region (40th-60th percentile)
@@ -197,7 +197,7 @@ class IterativeAAVTrainer:
         self.global_step = 0
 
     def _load_landscape(self):
-        """Load the complete AAV fitness landscape."""
+        """Load the complete GFP fitness landscape."""
         df = pd.read_csv(self.landscape_path)
 
         self.seq_to_fitness = {}
@@ -581,7 +581,7 @@ class IterativeAAVTrainer:
         sequences = []
         x = rnn_start_token_vector(num_samples, self.device)
 
-        n_positions = AAV_LENGTH
+        n_positions = GFP_LENGTH
 
         with torch.no_grad():
             for step in range(n_positions):
@@ -702,17 +702,6 @@ class IterativeAAVTrainer:
         logger.info(f"Cluster sampling: selected {len(selected_seqs)} from {n_clusters} clusters")
         return selected_seqs
 
-    def _filter_valid_seqs(self, seqs: List[str]) -> List[str]:
-        """Filter sequences to only include valid amino acid sequences."""
-        valid_aas = set(AMINO_ACIDS)
-        valid_seqs = []
-        for seq in seqs:
-            # Remove non-AA characters (B, space, newline, X)
-            clean_seq = ''.join(c for c in seq if c in valid_aas)
-            if len(clean_seq) == AAV_LENGTH:
-                valid_seqs.append(clean_seq)
-        return valid_seqs
-
     def _generate_rl_samples(self, n_samples: int) -> Tuple[List[str], np.ndarray]:
         """Generate samples using GPT model during RL training."""
         all_seqs = []
@@ -752,6 +741,17 @@ class IterativeAAVTrainer:
                     log_prob = log_prob.unsqueeze(0)
                 log_probs += self.nll_loss(log_prob, x[:, step])
         return log_probs
+
+    def _filter_valid_seqs(self, seqs: List[str]) -> List[str]:
+        """Filter sequences to only include valid amino acid sequences."""
+        valid_aas = set(AMINO_ACIDS)
+        valid_seqs = []
+        for seq in seqs:
+            # Remove non-AA characters (B, space, newline, X)
+            clean_seq = ''.join(c for c in seq if c in valid_aas)
+            if len(clean_seq) == GFP_LENGTH:
+                valid_seqs.append(clean_seq)
+        return valid_seqs
 
     def _train_gpt_on_surrogate(
         self, n_steps: int, round_idx: int = 0
@@ -1012,7 +1012,7 @@ def create_model(config) -> Tuple[GPT, GPTConfig]:
 
 
 def load_landscape_data_local(data_path: str) -> Tuple[List[str], np.ndarray]:
-    """Load complete AAV fitness landscape."""
+    """Load complete GFP fitness landscape."""
     df = pd.read_csv(data_path)
     sequences = df['seq'].tolist()
     fitness = df['fitness'].values
@@ -1103,13 +1103,13 @@ def run_single_experiment(
     finetune_lr: float = 1e-4,
     level: str = 'medium',
 ) -> Dict[str, Any]:
-    """Run a single AlphaVariant iterative optimization experiment on AAV."""
+    """Run a single AlphaVariant iterative optimization experiment on GFP."""
 
     if run_id is None:
         run_id = seed
 
     print(f"\n{'='*60}")
-    print(f"Starting AlphaVariant Iterative Optimization on AAV ({level})")
+    print(f"Starting AlphaVariant Iterative Optimization on GFP ({level})")
     print(f"  Seed: {seed}")
     print(f"  Rounds: {n_rounds}")
     print(f"  Steps per round: {n_steps_per_round}")
@@ -1134,9 +1134,9 @@ def run_single_experiment(
     os.system(f'cp {config_path} {os.path.join(run_dir, "config.yaml")}')
 
     # Get landscape path
-    landscape_path = f'{data_dir}/AAV_{level}/data.csv'
+    landscape_path = f'{data_dir}/GFP_hard/data.csv'
     if not os.path.exists(landscape_path):
-        landscape_path = f'{data_dir}/AAV_med/data.csv'
+        raise FileNotFoundError(f"GFP_hard data not found at: {landscape_path}")
 
     # Initialize template
     logger.info("Initializing template with hotspots...")
@@ -1149,7 +1149,7 @@ def run_single_experiment(
     logger.info(f"Reference sequence length: {len(ref_seq)}")
 
     # Initialize iterative trainer
-    trainer = IterativeAAVTrainer(
+    trainer = IterativeGFPTrainer(
         model_config=config.model,
         optim_config=config.optim,
         template=template,
@@ -1211,7 +1211,7 @@ def run_single_experiment(
             all_fitness=all_landscape_fitness,
             batch_size=config.train.batch_size,
             predicted_fitness=all_predicted,
-            wildtype=AAV_WILDTYPE,
+            wildtype=GFP_WILDTYPE,
         )
 
         result['metrics'] = metrics_result.to_dict()
@@ -1346,24 +1346,24 @@ def load_seeds_from_file(filepath: str, num_seeds: int) -> List[int]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run AlphaVariant iterative optimization on AAV hard benchmark",
+        description="Run AlphaVariant iterative optimization on GFP hard benchmark",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Single run with default seed
-  python run_AAV_hard.py
+  python run_GFP_hard.py
 
   # Single run with specific seed
-  python run_AAV_hard.py --seed 42
+  python run_GFP_hard.py --seed 42
 
   # Multiple runs for randomness evaluation
-  python run_AAV_hard.py --seeds 42 123 456 789 1000
+  python run_GFP_hard.py --seeds 42 123 456 789 1000
 
   # Load seeds from file (5 seeds by default)
-  python run_AAV_hard.py --seed_file ../rand_seeds.txt --num_seeds 5
+  python run_GFP_hard.py --seed_file ../rand_seeds.txt --num_seeds 5
 
   # Skip metrics computation
-  python run_AAV_hard.py --seed 42 --skip_metrics
+  python run_GFP_hard.py --seed 42 --skip_metrics
         """
     )
 
@@ -1374,9 +1374,9 @@ Examples:
     seed_group.add_argument("--seed_file", type=str, help="Path to file containing seeds")
 
     parser.add_argument("--num_seeds", type=int, default=5, help="Number of seeds from file (default: 5)")
-    parser.add_argument("--config", type=str, default="examples/AAV_hard/config/train_agent_config.yaml",
+    parser.add_argument("--config", type=str, default="examples/GFP_hard/config/train_agent_config.yaml",
                        help="Path to config file")
-    parser.add_argument("--output_path", type=str, default="results/AAV_hard_AlphaVariant/",
+    parser.add_argument("--output_path", type=str, default="results/GFP_hard_AlphaVariant/",
                        help="Output directory")
     parser.add_argument("--data_dir", type=str, default="/home/xux/Desktop/AlphaVariant/Benchmark/data",
                        help="Base data directory")
@@ -1416,7 +1416,7 @@ Examples:
     else:
         seeds = [42]
 
-    print(f"\nRunning AlphaVariant Iterative Optimization on AAV (hard)")
+    print(f"\nRunning AlphaVariant Iterative Optimization on GFP (medium)")
     print(f"  Seeds: {seeds}")
     print(f"  Rounds: {args.n_rounds}")
     print(f"  Steps per round: {args.n_steps_per_round}")
@@ -1448,7 +1448,7 @@ Examples:
             finetune_prior=args.finetune_prior,
             n_finetune_epochs=args.n_finetune_epochs,
             finetune_lr=args.finetune_lr,
-            level='hard',
+            level='medium',
         )
         results.append(result)
 

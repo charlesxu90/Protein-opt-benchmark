@@ -1,38 +1,43 @@
 #!/usr/bin/env python
 """
-run_AAV_hard.py - Execute AlphaVariant optimization on AAV hard dataset with comprehensive metrics
+run_generic.py - Generic dataset runner for AlphaVariant optimization
+
+A dataset-agnostic version of the AlphaVariant benchmark scripts. Automatically
+detects sequence length from loaded data, generates appropriate GPT config values,
+and uses the highest-fitness sequence as the wildtype fallback.
 
 Configuration:
-    - Model: GPT-based generative model
+    - Model: GPT-based generative model (config auto-generated from seq_len)
     - Scorer: aa_onehot based surrogate with iterative updates
     - Training: REINFORCE with prior regularization
     - Batch size: 96
     - Rounds: 15 (iterative approach)
 
 Iterative Training Process:
-    - Round 1: Initial sampling from low-fitness region (bottom 20th percentile)
+    - Round 1: Initial sampling from configurable fitness region
     - Rounds 2-15: GPT-guided sampling, get ground truth fitness, update surrogate, train GPT
 
-Metrics computed (from multiple reference works):
-    - Exploration: High-Fitness Proximity, Novelty, Batch Diversity
-    - Functional: Normalized Fitness (Top-K), Max Fitness
-    - Success: Simple Regret, Global Max Hit Count
-
 Usage:
-    # Single run with default seed
-    python run_AAV_hard.py
+    # Run on AAV_med dataset
+    python run_generic.py --dataset AAV_med --seed 42
 
-    # Single run with specific seed
-    python run_AAV_hard.py --seed 42
+    # Run on a custom dataset (data/<name>/data.csv must exist with seq,fitness columns)
+    python run_generic.py --dataset my_protein --seed 42
 
-    # Multiple runs for randomness evaluation
-    python run_AAV_hard.py --seeds 42 123 456 789 1000
+    # Use hard-level initialization (bottom 20th percentile)
+    python run_generic.py --dataset AAV_hard --level hard --seed 42
 
-    # Load seeds from file (5 seeds, 96 per round, 15 rounds)
-    python run_AAV_hard.py --seed_file ../rand_seeds.txt --num_seeds 5
+    # Override with an existing YAML config
+    python run_generic.py --dataset AAV_med --config examples/AAV_med/config/train_agent_config.yaml
+
+    # Multiple seeds
+    python run_generic.py --dataset GFP_med --seeds 42 123 456
+
+    # Load seeds from file
+    python run_generic.py --dataset GB1 --seed_file ../rand_seeds.txt --num_seeds 5
 
     # Skip metrics computation (faster)
-    python run_AAV_hard.py --seed 42 --skip_metrics
+    python run_generic.py --dataset AAV_med --seed 42 --skip_metrics
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ import copy
 import json
 import os
 import sys
+import tempfile
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -86,24 +92,190 @@ from scipy import stats as scipy_stats
 import warnings as metrics_warnings
 
 # =============================================================================
-# AAV Constants
+# Constants
 # =============================================================================
 
-AAV_WILDTYPE = "DEEEIRTTNPVATEQYGSYSTNLQQGNR"
-AAV_LENGTH = 28
 AMINO_ACIDS = 'ACDEFGHIKLMNPQRSTVWY'
+ALL_20_AAS = list(AMINO_ACIDS)
 
 
-# ============================================================================
-# AlphaVariant AAV Iterative Trainer
-# ============================================================================
+# =============================================================================
+# Auto-config generation
+# =============================================================================
 
-class IterativeAAVTrainer:
+def auto_detect_from_data(data_path: str) -> Dict[str, Any]:
     """
-    Iterative trainer for AAV benchmark following ALDE-style approach.
+    Auto-detect dataset properties from the data CSV.
+
+    Returns dict with:
+        - seq_len: detected sequence length (mode of all lengths)
+        - wildtype: sequence with highest fitness
+        - wildtype_fitness: fitness of the wildtype
+        - n_variants: total number of variants
+    """
+    df = pd.read_csv(data_path)
+    sequences = df['seq'].tolist()
+    fitness = df['fitness'].values
+
+    # Detect sequence length (use mode for variable-length datasets)
+    lengths = [len(s) for s in sequences]
+    seq_len = int(pd.Series(lengths).mode().iloc[0])
+
+    # Use highest-fitness sequence as wildtype fallback
+    best_idx = int(np.argmax(fitness))
+    wildtype = sequences[best_idx]
+    wildtype_fitness = float(fitness[best_idx])
+
+    logger.info(f"Auto-detected from {data_path}:")
+    logger.info(f"  Sequence length (mode): {seq_len}")
+    logger.info(f"  Number of variants: {len(sequences)}")
+    logger.info(f"  Fitness range: [{fitness.min():.4f}, {fitness.max():.4f}]")
+    logger.info(f"  Wildtype (best fitness): {wildtype[:40]}{'...' if len(wildtype) > 40 else ''} "
+                f"(fitness={wildtype_fitness:.4f})")
+
+    return {
+        'seq_len': seq_len,
+        'wildtype': wildtype,
+        'wildtype_fitness': wildtype_fitness,
+        'n_variants': len(sequences),
+    }
+
+
+def generate_config_dict(
+    seq_len: int,
+    wildtype: str,
+    data_path: str,
+    dataset_name: str,
+    batch_size: int = 96,
+    sigma: float = 60,
+    device: str = 'cuda:0',
+    n_steps: int = 500,
+) -> Dict[str, Any]:
+    """
+    Generate a config dictionary appropriate for the detected sequence length.
+
+    The GPT block_size is set to seq_len + 7 (buffer for start/end tokens).
+    Model dimensions are scaled based on sequence length:
+      - Short seqs (<=10): smaller model
+      - Medium seqs (<=50): standard model
+      - Long seqs (>50): larger block_size, same layer/head count
+    """
+    block_size = seq_len + 7
+
+    # Scale model based on sequence length
+    if seq_len <= 10:
+        n_layer = 4
+        n_head = 4
+        n_embd = 128
+    elif seq_len <= 100:
+        n_layer = 4
+        n_head = 4
+        n_embd = 128
+    else:
+        # Longer sequences: same architecture, larger block_size handles it
+        n_layer = 4
+        n_head = 4
+        n_embd = 128
+
+    config = {
+        'task': {
+            'score_type': 'weight',
+            'prop_names': ['fitness'],
+            'fn_config': {
+                'fitness': {
+                    'fn_type': f'{dataset_name}_surrogate',
+                    f'{dataset_name}_surrogate': {
+                        'data_path': data_path,
+                        'seq_len': seq_len,
+                        'n_init': batch_size,
+                        'n_ensemble': 5,
+                        'model_type': 'ensemble',
+                        'min_val': -10.0,
+                        'update_surrogate': False,
+                    },
+                },
+            },
+        },
+        'bonus': {
+            'bonus_type': 'none',
+            'bonus_amplitude': 1,
+        },
+        'template': {
+            'ref_seq_path': None,  # Will be generated dynamically
+            'hotspot_path': None,  # Will be generated dynamically
+        },
+        'train': {
+            'max_seq_len': seq_len,
+            'batch_size': batch_size,
+            'n_steps': n_steps,
+            'sigma': sigma,
+            'device': device,
+            'n_devices': 1,
+            'precision': 'bf16-mixed',
+            'matmul_precision': 'high',
+            'save_per_n_steps': 100,
+            'seed': 42,
+            'focus_on_hotspots': True,
+        },
+        'optim': {
+            'learning_rate': 0.0001,
+            'lr_decay': True,
+            'weight_decay': 0.1,
+            'beta_1': 0.9,
+            'beta_2': 0.95,
+            'grad_norm_clip': 1.0,
+        },
+        'model': {
+            'vocab_size': 24,   # 20 AAs + start/end/pad/X
+            'block_size': block_size,
+            'n_layer': n_layer,
+            'n_head': n_head,
+            'n_embd': n_embd,
+        },
+    }
+
+    return config
+
+
+def dict_to_easydict(d: dict) -> Any:
+    """Convert a nested dict to EasyDict for attribute-style access."""
+    from easydict import EasyDict
+    return EasyDict(d)
+
+
+def create_temp_fasta(wildtype: str, output_dir: str) -> str:
+    """Create a temporary FASTA file containing the wildtype sequence."""
+    fasta_path = os.path.join(output_dir, 'wt.fasta')
+    os.makedirs(os.path.dirname(fasta_path), exist_ok=True)
+    with open(fasta_path, 'w') as f:
+        f.write(f">WT\n{wildtype}\n")
+    return fasta_path
+
+
+def create_temp_hotspots(seq_len: int, output_dir: str) -> str:
+    """Create a temporary hotspots CSV with all positions and all 20 AAs."""
+    hotspot_path = os.path.join(output_dir, 'hotspots.csv')
+    os.makedirs(os.path.dirname(hotspot_path), exist_ok=True)
+    rows = []
+    aa_list_str = repr(ALL_20_AAS)
+    for pos in range(1, seq_len + 1):
+        rows.append(f'{pos},"{aa_list_str}"')
+    with open(hotspot_path, 'w') as f:
+        f.write("pos,mut_aas\n")
+        f.write("\n".join(rows) + "\n")
+    return hotspot_path
+
+
+# ============================================================================
+# AlphaVariant Generic Iterative Trainer
+# ============================================================================
+
+class IterativeProteinTrainer:
+    """
+    Generic iterative trainer for protein optimization benchmarks.
 
     Training Process:
-    - Round 1: Initial sampling from medium-fitness region (40th-60th percentile)
+    - Round 1: Initial sampling from configurable fitness region
     - Rounds 2-N: GPT-guided sampling with clustering
 
     Each round:
@@ -121,6 +293,7 @@ class IterativeAAVTrainer:
         template: PDETemplate,
         landscape_path: str,
         save_dir: str,
+        seq_len: int,
         batch_size: int = 96,
         n_rounds: int = 15,
         n_steps_per_round: int = 500,
@@ -143,6 +316,7 @@ class IterativeAAVTrainer:
         self.template = template
         self.landscape_path = landscape_path
         self.save_dir = save_dir
+        self.seq_len = seq_len
         self.batch_size = batch_size
         self.n_rounds = n_rounds
         self.n_steps_per_round = n_steps_per_round
@@ -197,7 +371,7 @@ class IterativeAAVTrainer:
         self.global_step = 0
 
     def _load_landscape(self):
-        """Load the complete AAV fitness landscape."""
+        """Load the complete fitness landscape."""
         df = pd.read_csv(self.landscape_path)
 
         self.seq_to_fitness = {}
@@ -223,7 +397,6 @@ class IterativeAAVTrainer:
         fitness = np.zeros(len(seqs))
         for i, seq in enumerate(seqs):
             if seq in self.seq_to_fitness:
-                # Normalize fitness to [0, 1]
                 fitness[i] = self.seq_to_fitness[seq]
             else:
                 # If sequence not in landscape, assign low fitness
@@ -232,13 +405,13 @@ class IterativeAAVTrainer:
 
     def _sample_initial_seqs(self, n_samples: int, exclude: set = None) -> List[str]:
         """
-        Sample initial sequences from medium-fitness region (40th-60th percentile).
-        For hard level, sample from bottom 20th percentile.
+        Sample initial sequences from a fitness region based on level.
+        - medium: 40th-60th percentile
+        - hard: bottom 20th percentile
         """
         if exclude is None:
             exclude = set()
 
-        # Determine fitness range based on level
         if self.level == 'medium':
             threshold_low = np.percentile(self.all_fitness, 40)
             threshold_high = np.percentile(self.all_fitness, 60)
@@ -264,7 +437,6 @@ class IterativeAAVTrainer:
         if exclude is None:
             exclude = set()
 
-        # Get available seqs from medium-fitness region
         if self.level == 'medium':
             threshold_low = np.percentile(self.all_fitness, 40)
             threshold_high = np.percentile(self.all_fitness, 60)
@@ -383,8 +555,8 @@ class IterativeAAVTrainer:
         # Give extra weight to best sequence if present
         if self.best_seq is not None and self.best_seq in seqs:
             best_idx = seqs.index(self.best_seq)
-            weights[best_idx] *= 2.0  # Double the weight for best sequence
-            weights = weights / weights.sum()  # Renormalize
+            weights[best_idx] *= 2.0
+            weights = weights / weights.sum()
 
         n_seqs = len(seqs)
         seq_len = all_tokens.size(1)
@@ -581,7 +753,7 @@ class IterativeAAVTrainer:
         sequences = []
         x = rnn_start_token_vector(num_samples, self.device)
 
-        n_positions = AAV_LENGTH
+        n_positions = self.seq_len
 
         with torch.no_grad():
             for step in range(n_positions):
@@ -703,13 +875,13 @@ class IterativeAAVTrainer:
         return selected_seqs
 
     def _filter_valid_seqs(self, seqs: List[str]) -> List[str]:
-        """Filter sequences to only include valid amino acid sequences."""
+        """Filter sequences to only include valid amino acid sequences of correct length."""
         valid_aas = set(AMINO_ACIDS)
         valid_seqs = []
         for seq in seqs:
             # Remove non-AA characters (B, space, newline, X)
             clean_seq = ''.join(c for c in seq if c in valid_aas)
-            if len(clean_seq) == AAV_LENGTH:
+            if len(clean_seq) == self.seq_len:
                 valid_seqs.append(clean_seq)
         return valid_seqs
 
@@ -998,21 +1170,8 @@ class IterativeAAVTrainer:
 # Main Experiment Functions
 # ============================================================================
 
-def create_model(config) -> Tuple[GPT, GPTConfig]:
-    """Create a new GPT model from config."""
-    mconf = GPTConfig(
-        vocab_size=config.vocab_size,
-        block_size=config.block_size,
-        n_layer=config.n_layer,
-        n_head=config.n_head,
-        n_embd=config.n_embd,
-    )
-    model = GPT(mconf)
-    return model, mconf
-
-
 def load_landscape_data_local(data_path: str) -> Tuple[List[str], np.ndarray]:
-    """Load complete AAV fitness landscape."""
+    """Load complete fitness landscape."""
     df = pd.read_csv(data_path)
     sequences = df['seq'].tolist()
     fitness = df['fitness'].values
@@ -1086,13 +1245,16 @@ def compute_all_metrics_local(
 
 def run_single_experiment(
     seed: int,
-    config_path: str,
+    dataset: str,
     output_path: str,
     data_dir: str,
+    config_path: Optional[str] = None,
     compute_metrics: bool = True,
     run_id: Optional[int] = None,
     n_rounds: int = 15,
     n_steps_per_round: int = 500,
+    batch_size: int = 96,
+    sigma: float = 60,
     top_k_cutoff: int = 1000,
     n_clusters: int = 10,
     sampling_strategy: str = 'cluster',
@@ -1102,24 +1264,36 @@ def run_single_experiment(
     n_finetune_epochs: int = 10,
     finetune_lr: float = 1e-4,
     level: str = 'medium',
+    device: str = 'cuda:0',
 ) -> Dict[str, Any]:
-    """Run a single AlphaVariant iterative optimization experiment on AAV."""
+    """Run a single AlphaVariant iterative optimization experiment on any dataset."""
 
     if run_id is None:
         run_id = seed
 
+    # Resolve landscape path
+    landscape_path = os.path.join(data_dir, dataset, 'data.csv')
+    if not os.path.exists(landscape_path):
+        raise FileNotFoundError(
+            f"Dataset file not found: {landscape_path}\n"
+            f"Expected data/<dataset>/data.csv with 'seq' and 'fitness' columns."
+        )
+
+    # Auto-detect dataset properties
+    dataset_info = auto_detect_from_data(landscape_path)
+    seq_len = dataset_info['seq_len']
+    wildtype = dataset_info['wildtype']
+
     print(f"\n{'='*60}")
-    print(f"Starting AlphaVariant Iterative Optimization on AAV ({level})")
+    print(f"Starting AlphaVariant Iterative Optimization on {dataset} ({level})")
     print(f"  Seed: {seed}")
+    print(f"  Seq length: {seq_len}")
     print(f"  Rounds: {n_rounds}")
     print(f"  Steps per round: {n_steps_per_round}")
     print(f"  Sampling strategy: {sampling_strategy}")
-    print(f"  Config: {config_path}")
+    print(f"  Config: {config_path if config_path else 'auto-generated'}")
     print(f"  Output: {output_path}")
     print(f"{'='*60}\n")
-
-    # Load configuration
-    config = parse_config(config_path)
 
     # Set seed
     set_random_seed(seed)
@@ -1130,36 +1304,85 @@ def run_single_experiment(
     run_dir = os.path.join(output_path, f'seed_{seed}')
     os.makedirs(run_dir, exist_ok=True)
 
-    # Save config copy
-    os.system(f'cp {config_path} {os.path.join(run_dir, "config.yaml")}')
+    if config_path is not None:
+        # Load from YAML config file (existing behavior)
+        config = parse_config(config_path)
+        os.system(f'cp {config_path} {os.path.join(run_dir, "config.yaml")}')
 
-    # Get landscape path
-    landscape_path = f'{data_dir}/AAV_{level}/data.csv'
-    if not os.path.exists(landscape_path):
-        landscape_path = f'{data_dir}/AAV_med/data.csv'
+        # Initialize template from config
+        logger.info("Initializing template from config file...")
+        fasta_sequences, _ = read_fasta_as_list(config.template.ref_seq_path)
+        ref_seq = fasta_sequences[0]
+        positions, pos_aa_candidates = load_hotspot(config.template.hotspot_path)
+        template = PDETemplate(ref_seq, positions=positions, pos_aa_candidates=pos_aa_candidates)
 
-    # Initialize template
-    logger.info("Initializing template with hotspots...")
-    fasta_sequences, _ = read_fasta_as_list(config.template.ref_seq_path)
-    ref_seq = fasta_sequences[0]
-    positions, pos_aa_candidates = load_hotspot(config.template.hotspot_path)
-    template = PDETemplate(ref_seq, positions=positions, pos_aa_candidates=pos_aa_candidates)
+        model_config = config.model
+        optim_config = config.optim
+        effective_batch_size = config.train.batch_size
+        effective_sigma = config.train.sigma
+        effective_device = config.train.device
 
-    logger.info(f"Template positions: {positions}")
+    else:
+        # Auto-generate config from detected properties
+        config_dict = generate_config_dict(
+            seq_len=seq_len,
+            wildtype=wildtype,
+            data_path=landscape_path,
+            dataset_name=dataset,
+            batch_size=batch_size,
+            sigma=sigma,
+            device=device,
+            n_steps=n_steps_per_round,
+        )
+        config = dict_to_easydict(config_dict)
+
+        # Save generated config as YAML for reproducibility
+        try:
+            import yaml
+            config_save_path = os.path.join(run_dir, 'config.yaml')
+            with open(config_save_path, 'w') as f:
+                yaml.dump(config_dict, f, default_flow_style=False)
+            logger.info(f"Auto-generated config saved to: {config_save_path}")
+        except ImportError:
+            # Save as JSON if yaml not available
+            config_save_path = os.path.join(run_dir, 'config.json')
+            with open(config_save_path, 'w') as f:
+                json.dump(config_dict, f, indent=2)
+
+        # Create temporary template files in the run directory
+        temp_dir = os.path.join(run_dir, 'generated_template')
+        os.makedirs(temp_dir, exist_ok=True)
+        fasta_path = create_temp_fasta(wildtype, temp_dir)
+        hotspot_path = create_temp_hotspots(seq_len, temp_dir)
+
+        logger.info("Initializing template from auto-generated files...")
+        fasta_sequences, _ = read_fasta_as_list(fasta_path)
+        ref_seq = fasta_sequences[0]
+        positions, pos_aa_candidates = load_hotspot(hotspot_path)
+        template = PDETemplate(ref_seq, positions=positions, pos_aa_candidates=pos_aa_candidates)
+
+        model_config = config.model
+        optim_config = config.optim
+        effective_batch_size = batch_size
+        effective_sigma = sigma
+        effective_device = device
+
+    logger.info(f"Template positions: {len(positions)} positions")
     logger.info(f"Reference sequence length: {len(ref_seq)}")
 
     # Initialize iterative trainer
-    trainer = IterativeAAVTrainer(
-        model_config=config.model,
-        optim_config=config.optim,
+    trainer = IterativeProteinTrainer(
+        model_config=model_config,
+        optim_config=optim_config,
         template=template,
         landscape_path=landscape_path,
         save_dir=run_dir,
-        batch_size=config.train.batch_size,
+        seq_len=seq_len,
+        batch_size=effective_batch_size,
         n_rounds=n_rounds,
         n_steps_per_round=n_steps_per_round,
-        sigma=config.train.sigma,
-        device=config.train.device,
+        sigma=effective_sigma,
+        device=effective_device,
         seed=seed,
         top_k_cutoff=top_k_cutoff,
         n_clusters=n_clusters,
@@ -1184,6 +1407,9 @@ def run_single_experiment(
     result = {
         'seed': seed,
         'run_id': run_id,
+        'dataset': dataset,
+        'seq_len': seq_len,
+        'wildtype': wildtype,
         'runtime_seconds': runtime,
         'n_sequences': len(all_seqs),
         'n_unique_sequences': len(set(all_seqs)),
@@ -1191,10 +1417,10 @@ def run_single_experiment(
         'n_steps_per_round': n_steps_per_round,
         'round_data': trainer.round_data,
         'config': {
-            'batch_size': config.train.batch_size,
+            'batch_size': effective_batch_size,
             'n_rounds': n_rounds,
             'n_steps_per_round': n_steps_per_round,
-            'sigma': config.train.sigma,
+            'sigma': effective_sigma,
         }
     }
 
@@ -1209,9 +1435,9 @@ def run_single_experiment(
             generated_fitness=all_oracle,
             all_sequences=all_landscape_seqs,
             all_fitness=all_landscape_fitness,
-            batch_size=config.train.batch_size,
+            batch_size=effective_batch_size,
             predicted_fitness=all_predicted,
-            wildtype=AAV_WILDTYPE,
+            wildtype=wildtype,
         )
 
         result['metrics'] = metrics_result.to_dict()
@@ -1220,7 +1446,7 @@ def run_single_experiment(
 
         # Print summary
         print("\n" + "-"*60)
-        print("Metrics Summary (ALDE-aligned, Oracle/Ground Truth):")
+        print(f"Metrics Summary for {dataset} (ALDE-aligned, Oracle/Ground Truth):")
         print("-"*60)
         print(f"  [Exploration]")
         print(f"    high_fitness_proximity:        {metrics_result.high_fitness_proximity:.4f}")
@@ -1313,6 +1539,7 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
             'aggregated_metrics': aggregated,
             'n_runs': len(results),
             'seeds': [r['seed'] for r in results],
+            'dataset': results[0].get('dataset', 'unknown') if results else 'unknown',
             'config': results[0].get('config', {}) if results else {}
         }, f, indent=2, default=str)
 
@@ -1346,26 +1573,36 @@ def load_seeds_from_file(filepath: str, num_seeds: int) -> List[int]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run AlphaVariant iterative optimization on AAV hard benchmark",
+        description="Run AlphaVariant iterative optimization on any protein dataset",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single run with default seed
-  python run_AAV_hard.py
+  # Run on AAV medium dataset
+  python run_generic.py --dataset AAV_med --seed 42
 
-  # Single run with specific seed
-  python run_AAV_hard.py --seed 42
+  # Run on GFP medium with hard-level init
+  python run_generic.py --dataset GFP_med --level hard --seed 42
+
+  # Use an existing YAML config instead of auto-generating
+  python run_generic.py --dataset AAV_med --config examples/AAV_med/config/train_agent_config.yaml
 
   # Multiple runs for randomness evaluation
-  python run_AAV_hard.py --seeds 42 123 456 789 1000
+  python run_generic.py --dataset GB1 --seeds 42 123 456 789 1000
 
-  # Load seeds from file (5 seeds by default)
-  python run_AAV_hard.py --seed_file ../rand_seeds.txt --num_seeds 5
+  # Load seeds from file
+  python run_generic.py --dataset AAV_hard --seed_file ../rand_seeds.txt --num_seeds 5
 
   # Skip metrics computation
-  python run_AAV_hard.py --seed 42 --skip_metrics
+  python run_generic.py --dataset AAV_med --seed 42 --skip_metrics
+
+  # Custom output path
+  python run_generic.py --dataset my_protein --output_path results/my_experiment/
         """
     )
+
+    # Dataset (required)
+    parser.add_argument("--dataset", type=str, required=True,
+                       help="Dataset name (must have data/<dataset>/data.csv with seq,fitness columns)")
 
     # Seed configuration
     seed_group = parser.add_mutually_exclusive_group()
@@ -1374,17 +1611,27 @@ Examples:
     seed_group.add_argument("--seed_file", type=str, help="Path to file containing seeds")
 
     parser.add_argument("--num_seeds", type=int, default=5, help="Number of seeds from file (default: 5)")
-    parser.add_argument("--config", type=str, default="examples/AAV_hard/config/train_agent_config.yaml",
-                       help="Path to config file")
-    parser.add_argument("--output_path", type=str, default="results/AAV_hard_AlphaVariant/",
-                       help="Output directory")
+    parser.add_argument("--config", type=str, default=None,
+                       help="Path to YAML config file (optional; auto-generated if not provided)")
+    parser.add_argument("--output_path", type=str, default=None,
+                       help="Output directory (default: results/<dataset>_AlphaVariant/)")
     parser.add_argument("--data_dir", type=str, default="/home/xux/Desktop/AlphaVariant/Benchmark/data",
                        help="Base data directory")
     parser.add_argument("--skip_metrics", action="store_true", help="Skip metrics computation")
+
+    # Training parameters
+    parser.add_argument("--level", type=str, choices=['medium', 'hard'], default='medium',
+                       help="Difficulty level for initial sampling (default: medium)")
     parser.add_argument("--n_rounds", type=int, default=15,
                        help="Number of iterative rounds (default: 15)")
     parser.add_argument("--n_steps_per_round", type=int, default=500,
                        help="GPT training steps per round (default: 500)")
+    parser.add_argument("--batch_size", type=int, default=96,
+                       help="Batch size / samples per round (default: 96)")
+    parser.add_argument("--sigma", type=float, default=60,
+                       help="REINFORCE sigma (default: 60)")
+    parser.add_argument("--device", type=str, default="cuda:0",
+                       help="Device for training (default: cuda:0)")
     parser.add_argument("--top_k_cutoff", type=int, default=1000,
                        help="Top-k cutoff for CLADE-2 sampling (default: 1000)")
     parser.add_argument("--n_clusters", type=int, default=10,
@@ -1405,6 +1652,10 @@ Examples:
     args = parser.parse_args()
     warnings.filterwarnings("ignore")
 
+    # Set default output path based on dataset name
+    if args.output_path is None:
+        args.output_path = f"results/{args.dataset}_AlphaVariant/"
+
     # Determine seeds
     if args.seeds is not None:
         seeds = args.seeds
@@ -1416,11 +1667,13 @@ Examples:
     else:
         seeds = [42]
 
-    print(f"\nRunning AlphaVariant Iterative Optimization on AAV (hard)")
+    print(f"\nRunning AlphaVariant Iterative Optimization on {args.dataset} ({args.level})")
     print(f"  Seeds: {seeds}")
     print(f"  Rounds: {args.n_rounds}")
     print(f"  Steps per round: {args.n_steps_per_round}")
+    print(f"  Batch size: {args.batch_size}")
     print(f"  Sampling strategy: {args.sampling}")
+    print(f"  Config: {args.config if args.config else 'auto-generated'}")
     print(f"  Output path: {args.output_path}")
     print(f"  Compute metrics: {not args.skip_metrics}")
 
@@ -1433,13 +1686,16 @@ Examples:
         print(f"\n[{i+1}/{len(seeds)}] Running experiment with seed={seed}")
         result = run_single_experiment(
             seed=seed,
-            config_path=args.config,
+            dataset=args.dataset,
             output_path=args.output_path,
             data_dir=args.data_dir,
+            config_path=args.config,
             compute_metrics=not args.skip_metrics,
             run_id=i + 1,
             n_rounds=args.n_rounds,
             n_steps_per_round=args.n_steps_per_round,
+            batch_size=args.batch_size,
+            sigma=args.sigma,
             top_k_cutoff=args.top_k_cutoff,
             n_clusters=args.n_clusters,
             sampling_strategy=args.sampling,
@@ -1448,7 +1704,8 @@ Examples:
             finetune_prior=args.finetune_prior,
             n_finetune_epochs=args.n_finetune_epochs,
             finetune_lr=args.finetune_lr,
-            level='hard',
+            level=args.level,
+            device=args.device,
         )
         results.append(result)
 
@@ -1461,12 +1718,14 @@ Examples:
     print("Experiment Complete")
     print(f"{'='*60}")
     print(f"Total runs: {len(results)}")
+    print(f"Dataset: {args.dataset}")
     print(f"Configuration:")
     print(f"  - Method: AlphaVariant Iterative (GPT + REINFORCE)")
     print(f"  - Rounds: {args.n_rounds}")
-    print(f"  - Batch size: 96 samples per round")
+    print(f"  - Batch size: {args.batch_size} samples per round")
     print(f"  - Steps per round: {args.n_steps_per_round}")
     print(f"  - Sampling strategy: {args.sampling}")
+    print(f"  - Level: {args.level}")
     print(f"Results saved to: {args.output_path}")
     print(f"{'='*60}\n")
 

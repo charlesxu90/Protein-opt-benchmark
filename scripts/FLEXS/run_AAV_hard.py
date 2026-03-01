@@ -191,7 +191,8 @@ def compute_metrics(
 
     # === Exploration metrics ===
     result.high_fitness_proximity = high_fitness_proximity(
-        queried_seqs, all_sequences, all_fitness
+        queried_seqs, all_sequences, all_fitness,
+        percentile=0.9, distance_fn='hamming'
     )
 
     if non_initial_seqs and initial_seqs:
@@ -337,11 +338,14 @@ def run_single_experiment(
     # =========================================================================
     # Random initialization (matching ALDE)
     # =========================================================================
-    print(f"\nRound 0: Random initialization ({n_init_samples} samples)")
+    print(f"\nRound 0: Percentile-based initialization ({n_init_samples} samples)")
 
-    # Sample random indices
-    all_indices = np.arange(len(all_sequences))
-    init_indices = np.random.choice(all_indices, size=n_init_samples, replace=False)
+    # Sample from bottom 20th percentile (low fitness) - matching LatProtRL
+    all_fitness = landscape.get_all_fitness()
+    threshold = np.percentile(all_fitness, 20)
+    low_mask = all_fitness <= threshold
+    low_indices = np.where(low_mask)[0]
+    init_indices = np.random.choice(low_indices, size=n_init_samples, replace=False)
 
     # Get initial sequences and their true fitness
     init_sequences = [all_sequences[i] for i in init_indices]
@@ -767,8 +771,8 @@ Examples:
     elif args.seed is not None:
         seeds = [args.seed]
     else:
-        # Default seed
-        seeds = [64]
+        # Default seed (matching LatProtRL)
+        seeds = [42]
 
     total_samples = args.init_samples + args.rounds * args.batch_size
     print(f"\nRunning AdaLead on AAV_hard with {len(seeds)} seed(s): {seeds}")

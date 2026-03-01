@@ -95,11 +95,21 @@ def load_landscape_data(
             'GB1_data.csv',
             'GB1/landscape.csv',
         ],
-        'AAV_medium': ['AAV_medium.csv', 'aav_medium.csv', 'AAV/medium.csv'],
-        'AAV_hard': ['AAV_hard.csv', 'aav_hard.csv', 'AAV/hard.csv'],
-        'GFP_medium': ['GFP_medium.csv', 'gfp_medium.csv', 'GFP/medium.csv'],
-        'GFP_hard': ['GFP_hard.csv', 'gfp_hard.csv', 'GFP/hard.csv'],
+        # Canonical short names (matching directory names)
+        'AAV_med': ['AAV_med/data.csv', 'AAV_medium.csv', 'AAV/medium.csv'],
+        'AAV_hard': ['AAV_hard/data.csv', 'AAV_hard.csv', 'AAV/hard.csv'],
+        'GFP_med': ['GFP_med/data.csv', 'GFP_medium.csv', 'GFP/medium.csv'],
+        'GFP_hard': ['GFP_hard/data.csv', 'GFP_hard.csv', 'GFP/hard.csv'],
+        # Legacy aliases
+        'AAV_medium': ['AAV_med/data.csv', 'AAV_medium.csv', 'AAV/medium.csv'],
+        'GFP_medium': ['GFP_med/data.csv', 'GFP_medium.csv', 'GFP/medium.csv'],
     }
+
+    # Fallback: check for data/<name>/data.csv directly
+    if dataset not in dataset_files:
+        fallback_path = data_dir / dataset / 'data.csv'
+        if fallback_path.exists():
+            return load_csv_data(fallback_path, sequence_col, fitness_col)
 
     if dataset not in dataset_files:
         raise ValueError(

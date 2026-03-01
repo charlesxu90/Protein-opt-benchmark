@@ -21,6 +21,8 @@ Each method can replace their local metrics imports with:
         spearman_correlation,
         miscalibration_area,
         expected_calibration_error,
+        area_under_optimization_curve,
+        hit_rate_metric,
     )
 
 This provides drop-in compatibility with the ALDE metrics interface.
@@ -53,6 +55,8 @@ from .metrics import (
     expected_calibration_error as _expected_calibration_error,
     regression_calibration_error,
     global_max_hit_count as _global_max_hit_count,
+    area_under_optimization_curve as _area_under_optimization_curve,
+    hit_rate as _hit_rate,
 )
 from .data import (
     load_csv_data,
@@ -94,6 +98,10 @@ class MetricsResult:
     miscalibration_area: float = 1.0
     expected_calibration_error: float = 1.0
 
+    # Optimization curve and hit rate
+    auoc: float = 0.0
+    hit_rate_value: float = 0.0
+
     # Trajectories (per-round data)
     regret_trajectory: List[float] = field(default_factory=list)
     fitness_trajectory: List[float] = field(default_factory=list)
@@ -114,6 +122,8 @@ class MetricsResult:
             'global_max_found': self.global_max_found,
             'miscalibration_area': self.miscalibration_area,
             'expected_calibration_error': self.expected_calibration_error,
+            'auoc': self.auoc,
+            'hit_rate': self.hit_rate_value,
         }
 
 
@@ -478,7 +488,7 @@ def aggregate_run_metrics(
         'normalized_fitness_median_top128', 'normalized_fitness_median_top256',
         'max_fitness', 'spearman_correlation', 'epistatic_correlation',
         'recall_high_order', 'simple_regret', 'miscalibration_area',
-        'expected_calibration_error'
+        'expected_calibration_error', 'auoc', 'hit_rate_value'
     ]
 
     aggregated = {}
@@ -508,3 +518,24 @@ def aggregate_run_metrics(
     }
 
     return aggregated
+
+
+# =============================================================================
+# New Metrics Wrappers: AUOC and Hit Rate
+# =============================================================================
+
+def area_under_optimization_curve(
+    fitness_trajectory: Sequence[float],
+    global_max_fitness: float,
+    normalize: bool = True
+) -> float:
+    """Compute AUOC. See utils.metrics.area_under_optimization_curve."""
+    return _area_under_optimization_curve(fitness_trajectory, global_max_fitness, normalize)
+
+
+def hit_rate_metric(
+    generated_fitness: Sequence[float],
+    threshold: float
+) -> float:
+    """Compute hit rate. See utils.metrics.hit_rate."""
+    return _hit_rate(generated_fitness, threshold)

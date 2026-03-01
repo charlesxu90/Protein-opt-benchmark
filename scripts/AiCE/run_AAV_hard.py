@@ -117,6 +117,10 @@ class AiCEScorer:
        from inverse folding samples (structure-compatible sequences)
     2. Multi-mutations: Consider LD (linkage disequilibrium) and SCA
        (statistical coupling analysis) to identify compatible combinations
+
+    Note: For AAV datasets, we use the best sequence from the initial sample
+    as the reference (instead of wild-type) since wild-type is the best in AAV,
+    which would create unfair bias.
     """
 
     def __init__(
@@ -124,14 +128,16 @@ class AiCEScorer:
         sequences: List[str],
         fitness: np.ndarray,
         config: AiCEConfig = None,
-        wildtype: str = AAV_WILDTYPE,
+        reference_seq: str = None,
+        initial_seqs: List[str] = None,
         freq_data: Optional[Dict] = None
     ):
         self.sequences = sequences
         self.fitness = fitness
         self.config = config or AiCEConfig()
-        self.wildtype = wildtype
-        self.seq_length = len(wildtype)
+        self.reference_seq = reference_seq if reference_seq else AAV_WILDTYPE
+        self.initial_seqs = initial_seqs or []
+        self.seq_length = len(self.reference_seq)
 
         # Build sequence to index mapping
         self.seq_to_idx = {seq: idx for idx, seq in enumerate(sequences)}
@@ -169,34 +175,26 @@ class AiCEScorer:
         Compute position-specific amino acid frequencies.
 
         In the actual AiCE pipeline, this comes from ProteinMPNN inverse folding.
-        Here we simulate it using a combination of:
-        1. High-fitness sequences (top 10%)
-        2. Evolutionary coupling patterns
+        Here we simulate it using ONLY the initial/observed sequences to avoid
+        using oracle fitness information from the full landscape.
+
+        This ensures fair comparison with other methods that don't have access
+        to global fitness values.
         """
         freq_data = {}
 
-        # Use top percentile as "structure-compatible" sequences
-        # This simulates what ProteinMPNN would output
-        threshold = np.percentile(self.fitness, 90)
-        high_fit_mask = self.fitness >= threshold
-        high_fit_seqs = [seq for seq, is_high in zip(self.sequences, high_fit_mask) if is_high]
-
-        # Also consider wildtype-like sequences (low mutation count) as structural templates
-        wt = self.wildtype
-        wt_like = []
-        for seq in self.sequences:
-            try:
-                if hamming_distance(seq, wt) <= 2:
-                    wt_like.append(seq)
-            except ValueError:
-                # Sequences may have different lengths, skip
-                continue
-
-        # Combine both sets with weights
-        template_seqs = high_fit_seqs + wt_like * 2  # Weight WT-like sequences
+        # IMPORTANT: Only use initial sequences as templates
+        # Using global top 10% would be oracle cheating since those fitness
+        # values wouldn't be available in a real experiment
+        template_seqs = self.initial_seqs if self.initial_seqs else []
 
         if not template_seqs:
-            template_seqs = self.sequences[:100]  # Fallback
+            # Fallback to uniform frequencies if no initial sequences
+            for pos in range(self.seq_length):
+                freq_data[pos] = {}
+                for aa in self.amino_acids:
+                    freq_data[pos][aa] = 1.0 / len(self.amino_acids)
+            return freq_data
 
         for pos in range(self.seq_length):
             freq_data[pos] = {}
@@ -212,6 +210,8 @@ class AiCEScorer:
 
         LD measures the non-random association of alleles at different positions.
         High LD between positions suggests they should mutate together.
+
+        IMPORTANT: Only uses initial sequences to avoid oracle cheating.
         """
         n_pos = len(self.variable_positions)
         if n_pos == 0:
@@ -219,12 +219,10 @@ class AiCEScorer:
 
         ld_matrix = np.ones((n_pos, n_pos))
 
-        # Use high-fitness sequences to compute LD
-        threshold = np.percentile(self.fitness, 90)
-        high_fit_mask = self.fitness >= threshold
-        high_fit_seqs = [seq for seq, is_high in zip(self.sequences, high_fit_mask) if is_high]
+        # Use only initial sequences to compute LD (no oracle cheating)
+        ld_seqs = self.initial_seqs if self.initial_seqs else []
 
-        if len(high_fit_seqs) < 10:
+        if len(ld_seqs) < 10:
             return ld_matrix
 
         for i, pos_i in enumerate(self.variable_positions):
@@ -234,7 +232,7 @@ class AiCEScorer:
 
                 # Count co-occurrences
                 pair_counts = {}
-                for seq in high_fit_seqs:
+                for seq in ld_seqs:
                     if len(seq) > max(pos_i, pos_j):
                         pair = (seq[pos_i], seq[pos_j])
                         pair_counts[pair] = pair_counts.get(pair, 0) + 1
@@ -271,13 +269,13 @@ class AiCEScorer:
 
             # LD bonus for multi-mutations
             try:
-                n_muts = hamming_distance(seq, self.wildtype)
+                n_muts = hamming_distance(seq, self.reference_seq)
             except ValueError:
                 n_muts = 0
 
             if n_muts >= 2 and len(self.variable_positions) > 1:
                 # Get mutated positions
-                mut_positions = [i for i, (a, b) in enumerate(zip(seq, self.wildtype)) if a != b]
+                mut_positions = [i for i, (a, b) in enumerate(zip(seq, self.reference_seq)) if a != b]
 
                 # Find indices in variable_positions
                 mut_var_indices = []
@@ -493,14 +491,23 @@ def recall_high_order_mutants(
 # AAV Data Loading
 # =============================================================================
 
-def load_aav_data(data_dir: str) -> Tuple[List[str], np.ndarray, pd.DataFrame]:
+def load_aav_data(data_dir: str, n_init: int = 96, seed: int = 42) -> Tuple[List[str], np.ndarray, pd.DataFrame, List[int]]:
     """
-    Load AAV hard fitness landscape data.
+    Load AAV hard fitness landscape data with percentile-based initial sampling.
+
+    For hard difficulty, initial samples are selected from the bottom 20th percentile
+    of fitness values, matching LatProtRL's setup.
+
+    Args:
+        data_dir: Base directory for data files
+        n_init: Number of initial samples to select
+        seed: Random seed for reproducible sampling
 
     Returns:
         sequences: List of full AAV sequences
         fitness: Normalized fitness values
         df: Full dataframe
+        initial_indices: Indices of initial samples (bottom 20th percentile)
     """
     data_path = os.path.join(data_dir, "AAV_hard", "data.csv")
 
@@ -526,7 +533,18 @@ def load_aav_data(data_dir: str) -> Tuple[List[str], np.ndarray, pd.DataFrame]:
     if fitness_max > fitness_min:
         fitness = (fitness - fitness_min) / (fitness_max - fitness_min)
 
-    return sequences, fitness, df
+    # Select initial samples from bottom 20th percentile (hard difficulty)
+    # This matches LatProtRL's setup for AAV_hard
+    threshold = np.percentile(fitness, 20)
+    candidate_mask = fitness <= threshold
+    candidate_indices = np.where(candidate_mask)[0]
+
+    # Sample n_init from candidates using the provided seed
+    rng = np.random.RandomState(seed)
+    sample_size = min(n_init, len(candidate_indices))
+    initial_indices = rng.choice(candidate_indices, size=sample_size, replace=False).tolist()
+
+    return sequences, fitness, df, initial_indices
 
 
 # =============================================================================
@@ -557,9 +575,9 @@ def run_single_experiment(
 
     Since AiCE is primarily a one-shot prediction method, we simulate
     iterative optimization by:
-    1. Starting with random initial samples
+    1. Starting with percentile-based initial samples (bottom 20th percentile for hard)
     2. Using AiCE scores to guide batch selection
-    3. Comparing results against ALDE's iterative approach
+    3. Using best initial sequence as reference (instead of wild-type)
 
     Args:
         seed: Random seed for reproducibility
@@ -597,13 +615,14 @@ def run_single_experiment(
     print(f"  Budget: {budget}")
     print(f"  Total samples: {total_samples}")
     print(f"  Rounds: {n_rounds} (1 init + {n_rounds - 1} iterations)")
+    print(f"  Initial sampling: bottom 20th percentile (hard difficulty)")
     print(f"{'='*60}\n")
 
     # Set random seeds
     set_seed(seed)
 
-    # Load data
-    all_sequences, all_fitness, df = load_aav_data(data_dir)
+    # Load data with percentile-based initial sampling
+    all_sequences, all_fitness, df, initial_indices = load_aav_data(data_dir, n_init=n_init, seed=seed)
     global_max = np.max(all_fitness)
     global_min = np.min(all_fitness)
 
@@ -612,20 +631,33 @@ def run_single_experiment(
         print(f"Sequence length: {len(all_sequences[0])}")
         print(f"Fitness range: [{global_min:.4f}, {global_max:.4f}]")
 
-    # Initialize AiCE scorer
+    # Find best sequence from initial sample to use as reference
+    # (instead of wild-type, since wild-type is the best in AAV)
+    initial_fitness = all_fitness[initial_indices]
+    best_initial_idx = initial_indices[np.argmax(initial_fitness)]
+    reference_seq = all_sequences[best_initial_idx]
+    initial_seqs = [all_sequences[i] for i in initial_indices]
+
+    if verbose >= 1:
+        print(f"Initial samples from bottom 20th percentile")
+        print(f"  Initial fitness range: [{np.min(initial_fitness):.4f}, {np.max(initial_fitness):.4f}]")
+        print(f"  Using best initial sequence as reference (fitness={all_fitness[best_initial_idx]:.4f})")
+
+    # Initialize AiCE scorer with reference sequence and initial sequences
     print("Initializing AiCE scorer...")
-    scorer = AiCEScorer(all_sequences, all_fitness, aice_config, wildtype=AAV_WILDTYPE)
+    scorer = AiCEScorer(
+        all_sequences,
+        all_fitness,
+        aice_config,
+        reference_seq=reference_seq,
+        initial_seqs=initial_seqs
+    )
 
     # Create output directory
     subdir = os.path.join(output_path, "AAV_hard", "aice", "")
     os.makedirs(subdir, exist_ok=True)
 
-    # Random initialization (matching ALDE)
-    all_indices = list(range(len(all_sequences)))
-    random.shuffle(all_indices)
-    initial_indices = all_indices[:n_init]
-
-    # Track all queries
+    # Track all queries (starting with percentile-based initial samples)
     queried_indices = list(initial_indices)
     queried_set = set(queried_indices)
 
@@ -659,7 +691,10 @@ def run_single_experiment(
     result_path = os.path.join(subdir, f"AiCE-seed{seed}indices.pt")
     torch.save(queried_indices_tensor, result_path)
 
-    # Also save random baseline
+    # Also save random baseline (for comparison)
+    all_indices = list(range(len(all_sequences)))
+    rng = np.random.RandomState(seed)
+    rng.shuffle(all_indices)
     random_indices = all_indices[:total_samples]
     random_baseline_path = os.path.join(subdir, f'Random_{seed}indices.pt')
     torch.save(torch.tensor(random_indices), random_baseline_path)
@@ -730,10 +765,10 @@ def run_single_experiment(
             holdout_pred = aice_scores[holdout_mask]
 
             metrics.epistatic_correlation = epistatic_score_correlation(
-                holdout_seqs, holdout_true, holdout_pred, AAV_WILDTYPE
+                holdout_seqs, holdout_true, holdout_pred, reference_seq
             )
             metrics.recall_high_order = recall_high_order_mutants(
-                holdout_seqs, holdout_true, holdout_pred, AAV_WILDTYPE,
+                holdout_seqs, holdout_true, holdout_pred, reference_seq,
                 min_mutations=2, top_k=100
             )
 

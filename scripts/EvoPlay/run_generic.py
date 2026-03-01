@@ -1,17 +1,18 @@
 #!/usr/bin/env python
 """
-run_AAV_hard.py - Execute EvoPlay optimization on AAV hard dataset with comprehensive metrics
+run_generic.py - Execute EvoPlay optimization on any dataset with comprehensive metrics
 
 This script implements the EvoPlay algorithm following the ALDE benchmarking paradigm
-for fair comparison with other directed evolution methods.
+for fair comparison with other directed evolution methods. It is a generic runner
+that accepts a --dataset argument and auto-detects sequence properties.
 
 Configuration:
     - Model: Gaussian Process + MCTS with AlphaZero-style Policy-Value Network
     - Encoding: One-hot
     - Initial samples: 96 (cluster-based sampling)
     - Batch size: 96 variants per round
-    - Rounds: 15 (configurable)
-    - MCTS playouts: 30 per move (configurable)
+    - Rounds: auto (15 for seq_len <= 50, 5 for seq_len > 50)
+    - MCTS playouts: auto (30 for seq_len <= 50, 10 for seq_len > 50)
     - c_puct: 10
 
 Metrics computed (from multiple reference works):
@@ -19,24 +20,21 @@ Metrics computed (from multiple reference works):
     - Functional: Normalized Fitness (Top-K), Max Fitness
     - Success: Simple Regret, Global Max Hit Count
 
-Data Sources:
-    - /home/xux/Desktop/AlphaVariant/Benchmark/data/AAV_hard/data.csv
-
 Usage:
     # Single run with default seed
-    python run_AAV_hard.py
+    python run_generic.py --dataset AAV_med
 
     # Single run with specific seed
-    python run_AAV_hard.py --seed 42
+    python run_generic.py --dataset GB1 --seed 42
 
     # Multiple runs with different seeds for randomness evaluation
-    python run_AAV_hard.py --seeds 42 123 456 789 1000
+    python run_generic.py --dataset GFP_med --seeds 42 123 456 789 1000
 
     # Use predefined seeds from file
-    python run_AAV_hard.py --seed_file ../rand_seeds.txt --num_seeds 5
+    python run_generic.py --dataset AAV_hard --seed_file ../rand_seeds.txt --num_seeds 5
 
     # Use GPU for policy-value network
-    python run_AAV_hard.py --seed 42 --use_gpu --gpu_device 1
+    python run_generic.py --dataset AAV_med --seed 42 --use_gpu --gpu_device 1
 """
 
 from __future__ import annotations
@@ -97,14 +95,25 @@ def set_seed(seed: int) -> None:
         torch.backends.cudnn.benchmark = False
 
 
-def get_wildtype_sequence(protein: str) -> Optional[str]:
-    """Get the wild-type sequence for a protein."""
+def get_wildtype_sequence(protein: str, sequences: List[str] = None, fitness: np.ndarray = None) -> Optional[str]:
+    """Get the wild-type sequence for a protein.
+
+    Known wild-types are returned directly. For unknown datasets, the sequence
+    with the highest fitness is used as a fallback reference.
+    """
     wildtype_map = {
         'GB1': 'VDGV',
-        'AAV_hard': 'DEEEIRTTNPVATEQYGSYSTNLQQGNR',
+        'AAV_med': 'DEEEIRTTNPVATEQYGSYSTNLQQGNR',
         'AAV_hard': 'DEEEIRTTNPVATEQYGSYSTNLQQGNR',
     }
-    return wildtype_map.get(protein)
+    wt = wildtype_map.get(protein)
+    if wt is not None:
+        return wt
+    # Fallback: use the highest-fitness sequence as wildtype reference
+    if sequences is not None and fitness is not None and len(sequences) > 0:
+        best_idx = int(np.argmax(fitness))
+        return sequences[best_idx]
+    return None
 
 
 def epistatic_score_correlation(
@@ -113,8 +122,7 @@ def epistatic_score_correlation(
     y_pred: np.ndarray,
     wildtype: str
 ) -> float:
-    """Compute Spearman correlation for high-order mutants (≥2 mutations from wildtype)."""
-    # Find high-order mutants
+    """Compute Spearman correlation for high-order mutants (>=2 mutations from wildtype)."""
     high_order_mask = np.array([hamming_distance(seq, wildtype) >= 2 for seq in sequences])
     if np.sum(high_order_mask) < 10:
         return 0.0
@@ -130,7 +138,6 @@ def recall_high_order_mutants(
     top_k: int = 100
 ) -> float:
     """Compute recall of top-k high-order mutants."""
-    # Find high-order mutants
     high_order_mask = np.array([hamming_distance(seq, wildtype) >= min_mutations for seq in sequences])
     n_ho = np.sum(high_order_mask)
     if n_ho < top_k:
@@ -459,15 +466,15 @@ from torch.autograd import Variable
 
 
 class Net(nn.Module):
-    """Policy-value network module adapted for longer sequences like AAV (28 aa)."""
+    """Policy-value network module adapted for variable-length sequences."""
 
     def __init__(self, board_width, board_height):
         super(Net, self).__init__()
-        self.board_width = board_width  # sequence length (28 for AAV)
+        self.board_width = board_width  # sequence length
         self.board_height = board_height  # vocab size (20 amino acids)
 
         # Use smaller kernels and appropriate padding for sequence length
-        # Input shape: (batch, 20, seq_len) -> vocab_size as channels, seq_len as width
+        # Input shape: (batch, vocab_size, seq_len)
         self.conv1 = nn.Conv1d(board_height, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
         self.conv3 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
@@ -666,19 +673,16 @@ class EvoPlayTrainer:
 
     def _compute_update_thresholds(self, batch_size: int, n_rounds: int) -> List[int]:
         """Compute thresholds for predictor updates based on batch size and rounds."""
-        # Update after each round
         thresholds = [batch_size * (i + 1) for i in range(n_rounds)]
         return thresholds
 
     def start_mutating(self):
         """Start a mutation episode."""
-        # Check if we should switch to a new starting sequence
         if (self.seq_env.previous_init_state == self.seq_env.init_state).all():
             self.seq_env.init_state_count += 1
         if self.seq_env.init_state_count >= 10:
             if len(self.seq_env.start_seq_pool) > 0:
                 new_start_seq = self.seq_env.start_seq_pool[0]
-                # Skip empty or invalid sequences
                 while new_start_seq == "" or len(new_start_seq) != self.seq_len:
                     self.seq_env.start_seq_pool.remove(new_start_seq)
                     if len(self.seq_env.start_seq_pool) == 0:
@@ -790,7 +794,6 @@ class EvoPlayTrainer:
                         self.index_to_combo(idx): self.fitness[idx]
                         for idx in seq_index_list
                     }
-                    # Filter out empty sequences
                     update_predictor_dict = {k: v for k, v in update_predictor_dict.items() if k}
                     update_round_d = sorted(update_predictor_dict.items(), key=lambda x: x[1], reverse=True)
                     new_pool = [k for k, v in update_round_d]
@@ -814,7 +817,6 @@ class EvoPlayTrainer:
         # Return collected indices and sequences, filtering out empty sequences
         all_indices = list(self.first_round_index_set.union(self.collected_seqs_index_set))
         all_seqs = [self.index_to_combo(idx) for idx in all_indices]
-        # Filter out empty sequences
         valid_pairs = [(idx, seq) for idx, seq in zip(all_indices, all_seqs) if seq and len(seq) == self.seq_len]
         if valid_pairs:
             all_indices, all_seqs = zip(*valid_pairs)
@@ -834,23 +836,51 @@ class EvoPlayTrainer:
 # Main Experiment Functions
 # ============================================================================
 
-def load_aav_hard_data(data_dir: str = None) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+def load_dataset_data(dataset: str, data_dir: str = None) -> Tuple[np.ndarray, np.ndarray, List[str], int]:
     """
-    Load AAV hard dataset from:
-    /home/xux/Desktop/AlphaVariant/Benchmark/data/AAV_hard/data.csv
+    Load dataset from data/<dataset>/data.csv generically.
+
+    The CSV must have columns 'seq' and 'fitness'.
+
+    Returns:
+        features: One-hot encoded features (N x seq_len*vocab_size)
+        fitness: Fitness values (N,)
+        sequences: List of sequence strings
+        seq_len: Detected sequence length
     """
-    # Default AAV_hard data path
     if data_dir is None:
         data_dir = '/home/xux/Desktop/AlphaVariant/Benchmark/data'
 
-    data_path = os.path.join(data_dir, 'AAV_hard', 'data.csv')
+    data_path = os.path.join(data_dir, dataset, 'data.csv')
 
     if not os.path.exists(data_path):
-        raise FileNotFoundError(f"AAV hard data not found at {data_path}")
+        raise FileNotFoundError(f"Dataset not found at {data_path}")
 
     fitness_df = pd.read_csv(data_path)
-    sequences = fitness_df['seq'].tolist()
+
+    # Support both 'seq' and 'sequence' column names
+    if 'seq' in fitness_df.columns:
+        sequences = fitness_df['seq'].tolist()
+    elif 'sequence' in fitness_df.columns:
+        sequences = fitness_df['sequence'].tolist()
+    else:
+        raise ValueError(f"Data CSV must have a 'seq' or 'sequence' column. Found: {list(fitness_df.columns)}")
+
     fitness = fitness_df['fitness'].values
+
+    # Auto-detect sequence length from the data
+    seq_lengths = set(len(s) for s in sequences)
+    if len(seq_lengths) > 1:
+        # Variable-length sequences: filter to the most common length
+        from collections import Counter
+        length_counts = Counter(len(s) for s in sequences)
+        most_common_len = length_counts.most_common(1)[0][0]
+        print(f"  Warning: Found {len(seq_lengths)} different sequence lengths. "
+              f"Filtering to most common length: {most_common_len}")
+        mask = [len(s) == most_common_len for s in sequences]
+        sequences = [s for s, m in zip(sequences, mask) if m]
+        fitness = fitness[mask]
+    seq_len = len(sequences[0])
 
     # Create one-hot features
     features = []
@@ -859,76 +889,108 @@ def load_aav_hard_data(data_dir: str = None) -> Tuple[np.ndarray, np.ndarray, Li
         features.append(oh.flatten())
     features = np.array(features)
 
-    print(f"Loaded AAV hard data from: {data_path}")
+    print(f"Loaded {dataset} data from: {data_path}")
     print(f"  Total sequences: {len(sequences)}")
-    print(f"  Sequence length: {len(sequences[0])}")
+    print(f"  Sequence length: {seq_len}")
     print(f"  Fitness range: [{fitness.min():.4f}, {fitness.max():.4f}]")
 
-    return features, fitness, sequences
+    return features, fitness, sequences, seq_len
+
+
+def get_default_n_playout(seq_len: int) -> int:
+    """Get default MCTS playout count based on sequence length."""
+    if seq_len <= 50:
+        return 30
+    else:
+        return 10
+
+
+def get_default_n_rounds(seq_len: int) -> int:
+    """Get default number of optimization rounds based on sequence length."""
+    if seq_len <= 50:
+        return 15
+    else:
+        return 5
 
 
 def run_single_experiment(
+    dataset: str,
     seed: int,
     data_dir: Optional[str] = None,
-    output_path: str = "results/AAV_hard_EvoPlay_experiments/",
+    output_path: Optional[str] = None,
     verbose: int = 2,
     run_id: Optional[int] = None,
     compute_metrics: bool = True,
-    n_playout: int = 30,
+    n_playout: Optional[int] = None,
     use_gpu: bool = False,
     gpu_device: int = 0,
     batch_size: int = 96,
-    n_rounds: int = 15
+    n_rounds: Optional[int] = None
 ) -> Dict[str, Any]:
-    """Run a single EvoPlay experiment on AAV hard dataset."""
+    """Run a single EvoPlay experiment on the specified dataset."""
 
     # Configuration
-    protein = "AAV_hard"
     n_clusters = 30
     num_first_round = 96
 
     if run_id is None:
         run_id = seed
 
+    if output_path is None:
+        output_path = f"results/{dataset}_EvoPlay/"
+
+    # Load data (auto-detects seq_len)
+    features, fitness_normalized, sequences, seq_len = load_dataset_data(dataset, data_dir)
+
+    # Set defaults based on detected sequence length
+    if n_playout is None:
+        n_playout = get_default_n_playout(seq_len)
+    if n_rounds is None:
+        n_rounds = get_default_n_rounds(seq_len)
+
     total_samples = batch_size * n_rounds
 
     print(f"\n{'='*60}")
-    print(f"Starting EvoPlay optimization on AAV hard")
+    print(f"Starting EvoPlay optimization on {dataset}")
     print(f"  Seed: {seed}")
     print(f"  Model: GP + MCTS with Policy-Value Network")
     print(f"  Encoding: One-hot")
+    print(f"  Sequence length: {seq_len}")
     print(f"  Initial samples: {num_first_round}")
     print(f"  Batch size: {batch_size}")
     print(f"  Rounds: {n_rounds}")
+    print(f"  MCTS playouts: {n_playout}")
     print(f"  Total target samples: {total_samples}")
     print(f"  GPU: {'cuda:' + str(gpu_device) if use_gpu else 'CPU'}")
     print(f"{'='*60}\n")
 
     set_seed(seed)
 
-    # Load data
-    features, fitness, sequences = load_aav_hard_data(data_dir)
-    fitness_normalized = fitness  # Already normalized in data
-
     # Create output directory
-    subdir = os.path.join(output_path, protein, "onehot", "")
+    subdir = os.path.join(output_path, dataset, "onehot", "")
     os.makedirs(subdir, exist_ok=True)
 
-    # Filter to low-fitness sequences (bottom 20th percentile) to match LatProtRL setup
-    threshold = np.percentile(fitness_normalized, 20)
-    candidate_mask = fitness_normalized <= threshold
+    # Filter to medium-fitness sequences (40th-60th percentile) for initial sampling
+    threshold_low = np.percentile(fitness_normalized, 40)
+    threshold_high = np.percentile(fitness_normalized, 60)
+    candidate_mask = (fitness_normalized >= threshold_low) & (fitness_normalized <= threshold_high)
     candidate_indices = np.where(candidate_mask)[0]
 
-    print(f"  Filtering to bottom 20th percentile: {len(candidate_indices)} candidates")
-    print(f"  Fitness threshold: <= {threshold:.4f}")
+    print(f"  Filtering to 40th-60th percentile: {len(candidate_indices)} candidates")
+    print(f"  Fitness range: [{threshold_low:.4f}, {threshold_high:.4f}]")
 
     # Get features for candidates only
     candidate_features = features[candidate_indices]
 
+    # Adjust n_clusters if fewer candidates than clusters
+    effective_n_clusters = min(n_clusters, len(candidate_indices))
+    if effective_n_clusters < n_clusters:
+        print(f"  Adjusted n_clusters from {n_clusters} to {effective_n_clusters} (fewer candidates)")
+
     # Run K-means clustering on candidate features (hybrid approach)
-    Index = run_clustering(candidate_features, n_clusters)
+    Index = run_clustering(candidate_features, effective_n_clusters)
     Index = shuffle_index(Index)
-    Prob = np.ones([n_clusters]) / n_clusters
+    Prob = np.ones([effective_n_clusters]) / effective_n_clusters
 
     # Sample initial sequences from clusters
     Fit_list = []
@@ -937,11 +999,18 @@ def run_single_experiment(
     num = 0
 
     while num < num_first_round:
-        cluster_id = np.random.choice(np.arange(0, n_clusters), p=Prob)
+        cluster_id = np.random.choice(np.arange(0, effective_n_clusters), p=Prob)
         while len(Index[cluster_id]) == 0:
             Prob[cluster_id] = 0
+            if np.sum(Prob) == 0:
+                # All clusters exhausted, break
+                break
             Prob = Prob / np.sum(Prob)
-            cluster_id = np.random.choice(np.arange(0, n_clusters), p=Prob)
+            cluster_id = np.random.choice(np.arange(0, effective_n_clusters), p=Prob)
+
+        if np.sum(Prob) == 0:
+            print(f"  Warning: All clusters exhausted after {num} initial samples")
+            break
 
         local_idx = Index[cluster_id][0]
         global_idx = candidate_indices[local_idx]  # Map back to global index
@@ -962,8 +1031,8 @@ def run_single_experiment(
     first_round_d = sorted(combo_to_fitness_first_round.items(), key=lambda x: x[1], reverse=True)
     start_pool = [k for k, v in first_round_d]
 
-    # Safety check: exclude wild-type from start_pool (WT has max fitness in AAV)
-    wildtype = get_wildtype_sequence(protein)
+    # Get wildtype (dynamically populated for unknown datasets)
+    wildtype = get_wildtype_sequence(dataset, sequences, fitness_normalized)
     if wildtype and wildtype in start_pool:
         start_pool.remove(wildtype)
         print(f"  Warning: Wild-type found in initial samples, removed from start_pool")
@@ -1016,9 +1085,11 @@ def run_single_experiment(
     result = {
         'seed': seed,
         'run_id': run_id,
+        'dataset': dataset,
         'result_path': result_path,
         'runtime_seconds': runtime,
         'n_queries': len(queried_indices),
+        'seq_len': seq_len,
         'config': {
             'model': 'GP + MCTS + PolicyValueNet',
             'encoding': 'onehot',
@@ -1035,7 +1106,6 @@ def run_single_experiment(
 
         queried_fitness = fitness_normalized[queried_indices]
         initial_seqs = [sequences[i] for i in first_round_index]
-        wildtype = get_wildtype_sequence(protein)
 
         global_max = np.max(fitness_normalized)
         global_min = np.min(fitness_normalized)
@@ -1146,7 +1216,6 @@ def run_single_experiment(
         if final_checkpoint in result['checkpoint_metrics']:
             result['metrics'] = result['checkpoint_metrics'][final_checkpoint]
         elif result['checkpoint_metrics']:
-            # Use the last available checkpoint
             last_key = sorted(result['checkpoint_metrics'].keys(), key=lambda x: int(x.split('_')[1]))[-1]
             result['metrics'] = result['checkpoint_metrics'][last_key]
         else:
@@ -1197,7 +1266,7 @@ def load_seeds_from_file(filepath: str, num_seeds: int) -> List[int]:
     return seeds
 
 
-def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> None:
+def save_aggregated_results(results: List[Dict[str, Any]], output_path: str, dataset: str) -> None:
     """Save aggregated results across all runs with per-checkpoint metrics."""
 
     metrics_results = [r for r in results if 'metrics' in r]
@@ -1267,8 +1336,8 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
         print(f"  {'Metric':<40} {'Mean':>10} {'Std':>10}")
         print("-"*70)
         for name in metrics_names:
-            stats = aggregated[name]
-            print(f"  {name:<40} {stats['mean']:>10.4f} {stats['std']:>10.4f}")
+            stats_val = aggregated[name]
+            print(f"  {name:<40} {stats_val['mean']:>10.4f} {stats_val['std']:>10.4f}")
         hit_stats = aggregated['global_max_hit_count']
         print(f"  {'global_max_hit_count':<40} {hit_stats['rate']*100:>9.1f}% ({int(hit_stats['count'])}/{len(checkpoint_results)})")
 
@@ -1289,36 +1358,37 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
 
     # Create summary DataFrame for final metrics
     summary_data = []
-    for metric, stats in aggregated_final.items():
-        if 'mean' in stats:
+    for metric, stats_val in aggregated_final.items():
+        if 'mean' in stats_val:
             summary_data.append({
                 'metric': metric,
-                'mean': stats['mean'],
-                'std': stats['std'],
-                'min': stats['min'],
-                'max': stats['max']
+                'mean': stats_val['mean'],
+                'std': stats_val['std'],
+                'min': stats_val['min'],
+                'max': stats_val['max']
             })
-        elif 'count' in stats:
+        elif 'count' in stats_val:
             summary_data.append({
                 'metric': metric,
-                'mean': stats['rate'],
+                'mean': stats_val['rate'],
                 'std': 0,
-                'min': stats['count'],
+                'min': stats_val['count'],
                 'max': len(results)
             })
 
     summary_df = pd.DataFrame(summary_data)
 
     # Save to CSV
-    summary_path = os.path.join(output_path, 'AAV_hard', 'onehot', 'aggregated_metrics.csv')
+    summary_path = os.path.join(output_path, dataset, 'onehot', 'aggregated_metrics.csv')
     os.makedirs(os.path.dirname(summary_path), exist_ok=True)
     summary_df.to_csv(summary_path, index=False)
     print(f"\n\nFinal aggregated metrics saved to: {summary_path}")
 
     # Save complete aggregated results to JSON (including checkpoint metrics)
-    aggregated_json_path = os.path.join(output_path, 'AAV_hard', 'onehot', 'aggregated_results.json')
+    aggregated_json_path = os.path.join(output_path, dataset, 'onehot', 'aggregated_results.json')
     with open(aggregated_json_path, 'w') as f:
         json.dump({
+            'dataset': dataset,
             'aggregated_metrics_final': aggregated_final,
             'checkpoint_aggregates': checkpoint_aggregates,
             'n_runs': len(results),
@@ -1346,6 +1416,7 @@ def run_experiment_wrapper(args_tuple):
     seed, run_id, config = args_tuple
     try:
         result = run_single_experiment(
+            dataset=config['dataset'],
             seed=seed,
             data_dir=config['data_dir'],
             output_path=config['output_path'],
@@ -1368,28 +1439,40 @@ def run_experiment_wrapper(args_tuple):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run EvoPlay optimization on AAV hard dataset with GP + MCTS + Policy-Value Network",
+        description="Run EvoPlay optimization on any dataset with GP + MCTS + Policy-Value Network",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single run with default seed
-  python run_AAV_hard.py
+  # Single run on AAV_med with default seed
+  python run_generic.py --dataset AAV_med
 
-  # Single run with specific seed
-  python run_AAV_hard.py --seed 42
+  # Single run on GB1 with specific seed
+  python run_generic.py --dataset GB1 --seed 42
 
   # Multiple runs for randomness evaluation
-  python run_AAV_hard.py --seeds 42 123 456 789 1000
+  python run_generic.py --dataset GFP_med --seeds 42 123 456 789 1000
 
   # Load seeds from file
-  python run_AAV_hard.py --seed_file ../rand_seeds.txt --num_seeds 5
+  python run_generic.py --dataset AAV_hard --seed_file ../rand_seeds.txt --num_seeds 5
 
   # Skip metrics computation
-  python run_AAV_hard.py --seed 42 --skip_metrics
+  python run_generic.py --dataset AAV_med --seed 42 --skip_metrics
 
   # Use GPU device 1
-  python run_AAV_hard.py --seed_file ../rand_seeds.txt --num_seeds 5 --gpu_device 1 --use_gpu
+  python run_generic.py --dataset AAV_med --seed_file ../rand_seeds.txt --num_seeds 5 --gpu_device 1 --use_gpu
+
+  # Override auto-detected MCTS parameters
+  python run_generic.py --dataset AAV_med --seed 42 --n_playout 20 --n_rounds 10
         """
+    )
+
+    # Dataset (required)
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        help="Dataset name (e.g., GB1, AAV_med, AAV_hard, GFP_med). "
+             "Data is loaded from data/<dataset>/data.csv"
     )
 
     # Seed configuration
@@ -1429,8 +1512,8 @@ Examples:
     parser.add_argument(
         "--output_path",
         type=str,
-        default="results/AAV_hard_EvoPlay_experiments/",
-        help="Output directory for results (default: results/AAV_hard_EvoPlay_experiments/)"
+        default=None,
+        help="Output directory for results (default: results/<dataset>_EvoPlay/)"
     )
 
     # Batch and rounds configuration
@@ -1443,8 +1526,8 @@ Examples:
     parser.add_argument(
         "--n_rounds",
         type=int,
-        default=15,
-        help="Number of optimization rounds (default: 15)"
+        default=None,
+        help="Number of optimization rounds (default: auto based on seq_len; 15 for <=50, 5 for >50)"
     )
 
     # Other options
@@ -1458,8 +1541,8 @@ Examples:
     parser.add_argument(
         "--n_playout",
         type=int,
-        default=30,
-        help="Number of MCTS playouts per move (default: 30)"
+        default=None,
+        help="Number of MCTS playouts per move (default: auto based on seq_len; 30 for <=50, 10 for >50)"
     )
     parser.add_argument(
         "--use_gpu",
@@ -1487,6 +1570,14 @@ Examples:
     args = parser.parse_args()
     warnings.filterwarnings("ignore")
 
+    dataset = args.dataset
+
+    # Set default output path based on dataset
+    if args.output_path is None:
+        output_path = f"results/{dataset}_EvoPlay/"
+    else:
+        output_path = args.output_path
+
     # Determine which seeds to use
     if args.seeds is not None:
         seeds = args.seeds
@@ -1498,26 +1589,48 @@ Examples:
     else:
         seeds = [64]
 
-    print(f"\nRunning EvoPlay on AAV hard with {len(seeds)} seed(s): {seeds[:10]}{'...' if len(seeds) > 10 else ''}")
+    # Probe the dataset to determine seq_len for default parameter reporting
+    # (actual loading happens inside run_single_experiment)
+    data_path = os.path.join(args.data_dir, dataset, 'data.csv')
+    if os.path.exists(data_path):
+        probe_df = pd.read_csv(data_path, nrows=1)
+        col = 'seq' if 'seq' in probe_df.columns else 'sequence' if 'sequence' in probe_df.columns else None
+        if col:
+            probe_seq_len = len(probe_df[col].iloc[0])
+        else:
+            probe_seq_len = None
+    else:
+        probe_seq_len = None
+
+    effective_n_playout = args.n_playout if args.n_playout is not None else (
+        get_default_n_playout(probe_seq_len) if probe_seq_len else '?')
+    effective_n_rounds = args.n_rounds if args.n_rounds is not None else (
+        get_default_n_rounds(probe_seq_len) if probe_seq_len else '?')
+
+    print(f"\nRunning EvoPlay on {dataset} with {len(seeds)} seed(s): {seeds[:10]}{'...' if len(seeds) > 10 else ''}")
     print(f"Data directory: {args.data_dir}")
-    print(f"Output path: {args.output_path}")
+    print(f"Output path: {output_path}")
     print(f"Batch size: {args.batch_size}")
-    print(f"Rounds: {args.n_rounds}")
+    print(f"Rounds: {effective_n_rounds}" + (" (auto)" if args.n_rounds is None else ""))
+    print(f"MCTS playouts: {effective_n_playout}" + (" (auto)" if args.n_playout is None else ""))
+    if probe_seq_len:
+        print(f"Detected sequence length: {probe_seq_len}")
     print(f"Compute metrics: {not args.skip_metrics}")
     print(f"GPU device: {args.gpu_device if args.use_gpu else 'CPU'}")
     print(f"Parallel workers: {args.n_workers}")
 
     # Configuration dict for parallel execution
     config = {
+        'dataset': dataset,
         'data_dir': args.data_dir,
-        'output_path': args.output_path,
-        'verbose': args.verbose if args.n_workers == 1 else 0,  # Reduce verbosity in parallel mode
+        'output_path': output_path,
+        'verbose': args.verbose if args.n_workers == 1 else 0,
         'compute_metrics': not args.skip_metrics,
-        'n_playout': args.n_playout,
+        'n_playout': args.n_playout,  # None means auto-detect inside run_single_experiment
         'use_gpu': args.use_gpu,
         'gpu_device': args.gpu_device,
         'batch_size': args.batch_size,
-        'n_rounds': args.n_rounds,
+        'n_rounds': args.n_rounds,  # None means auto-detect inside run_single_experiment
     }
 
     # Prepare arguments for parallel execution
@@ -1556,9 +1669,10 @@ Examples:
         for i, seed in enumerate(seeds):
             print(f"\n[{i+1}/{len(seeds)}] Running experiment with seed={seed}")
             result = run_single_experiment(
+                dataset=dataset,
                 seed=seed,
                 data_dir=args.data_dir,
-                output_path=args.output_path,
+                output_path=output_path,
                 verbose=args.verbose,
                 run_id=i + 1,
                 compute_metrics=not args.skip_metrics,
@@ -1577,12 +1691,13 @@ Examples:
 
     # Aggregate results if multiple runs
     if len(successful_results) > 1 and not args.skip_metrics:
-        save_aggregated_results(successful_results, args.output_path)
+        save_aggregated_results(successful_results, output_path, dataset)
 
     # Final summary
     print(f"\n{'='*60}")
     print("Experiment Complete")
     print(f"{'='*60}")
+    print(f"Dataset: {dataset}")
     print(f"Total runs: {len(results)} ({len(successful_results)} successful, {len(results) - len(successful_results)} failed)")
     print(f"Total time: {total_time:.1f} seconds ({total_time/60:.1f} minutes)")
     print(f"Average time per run: {total_time/len(results):.1f} seconds")
@@ -1591,11 +1706,11 @@ Examples:
     print(f"  - Encoding: onehot")
     print(f"  - Initial samples: 96")
     print(f"  - Batch size: {args.batch_size}")
-    print(f"  - Rounds: {args.n_rounds}")
-    print(f"  - MCTS playouts: {args.n_playout}")
+    print(f"  - Rounds: {effective_n_rounds}")
+    print(f"  - MCTS playouts: {effective_n_playout}")
     print(f"  - Workers: {args.n_workers}")
     print(f"  - GPU: {'cuda:' + str(args.gpu_device) if args.use_gpu else 'CPU'}")
-    print(f"\nResults saved to: {args.output_path}")
+    print(f"\nResults saved to: {output_path}")
     print(f"{'='*60}\n")
 
 

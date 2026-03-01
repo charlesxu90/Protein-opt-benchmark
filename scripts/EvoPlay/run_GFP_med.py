@@ -1,6 +1,11 @@
 #!/usr/bin/env python
 """
-run_AAV_hard.py - Execute EvoPlay optimization on AAV hard dataset with comprehensive metrics
+run_GFP_med.py - Execute EvoPlay optimization on GFP medium dataset with comprehensive metrics
+
+WARNING: GFP sequences are 237 amino acids long, resulting in an MCTS action space of
+237 x 20 = 4,740 actions. This is dramatically larger than AAV (28 x 20 = 560) or GB1
+(4 x 20 = 80). Expect significantly longer runtimes. Default n_playout is reduced to 10
+(from 30) and n_rounds to 5 (from 15) to partially mitigate this cost.
 
 This script implements the EvoPlay algorithm following the ALDE benchmarking paradigm
 for fair comparison with other directed evolution methods.
@@ -10,8 +15,8 @@ Configuration:
     - Encoding: One-hot
     - Initial samples: 96 (cluster-based sampling)
     - Batch size: 96 variants per round
-    - Rounds: 15 (configurable)
-    - MCTS playouts: 30 per move (configurable)
+    - Rounds: 5 (configurable, reduced from 15 due to large action space)
+    - MCTS playouts: 10 per move (configurable, reduced from 30 due to large action space)
     - c_puct: 10
 
 Metrics computed (from multiple reference works):
@@ -20,23 +25,23 @@ Metrics computed (from multiple reference works):
     - Success: Simple Regret, Global Max Hit Count
 
 Data Sources:
-    - /home/xux/Desktop/AlphaVariant/Benchmark/data/AAV_hard/data.csv
+    - /home/xux/Desktop/AlphaVariant/Benchmark/data/GFP_med/data.csv
 
 Usage:
     # Single run with default seed
-    python run_AAV_hard.py
+    python run_GFP_med.py
 
     # Single run with specific seed
-    python run_AAV_hard.py --seed 42
+    python run_GFP_med.py --seed 42
 
     # Multiple runs with different seeds for randomness evaluation
-    python run_AAV_hard.py --seeds 42 123 456 789 1000
+    python run_GFP_med.py --seeds 42 123 456 789 1000
 
     # Use predefined seeds from file
-    python run_AAV_hard.py --seed_file ../rand_seeds.txt --num_seeds 5
+    python run_GFP_med.py --seed_file ../rand_seeds.txt --num_seeds 5
 
     # Use GPU for policy-value network
-    python run_AAV_hard.py --seed 42 --use_gpu --gpu_device 1
+    python run_GFP_med.py --seed 42 --use_gpu --gpu_device 1
 """
 
 from __future__ import annotations
@@ -97,12 +102,16 @@ def set_seed(seed: int) -> None:
         torch.backends.cudnn.benchmark = False
 
 
+# GFP wild-type sequence (237 amino acids)
+GFP_WILDTYPE = "SKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKQHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKIRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYK"
+
+
 def get_wildtype_sequence(protein: str) -> Optional[str]:
     """Get the wild-type sequence for a protein."""
     wildtype_map = {
         'GB1': 'VDGV',
         'AAV_hard': 'DEEEIRTTNPVATEQYGSYSTNLQQGNR',
-        'AAV_hard': 'DEEEIRTTNPVATEQYGSYSTNLQQGNR',
+        'GFP_med': GFP_WILDTYPE,
     }
     return wildtype_map.get(protein)
 
@@ -113,7 +122,7 @@ def epistatic_score_correlation(
     y_pred: np.ndarray,
     wildtype: str
 ) -> float:
-    """Compute Spearman correlation for high-order mutants (≥2 mutations from wildtype)."""
+    """Compute Spearman correlation for high-order mutants (>=2 mutations from wildtype)."""
     # Find high-order mutants
     high_order_mask = np.array([hamming_distance(seq, wildtype) >= 2 for seq in sequences])
     if np.sum(high_order_mask) < 10:
@@ -369,7 +378,7 @@ class TreeNode:
 class MCTS:
     """Monte Carlo Tree Search implementation."""
 
-    def __init__(self, policy_value_fn, c_puct=5, n_playout=30):
+    def __init__(self, policy_value_fn, c_puct=5, n_playout=10):
         self._root = TreeNode(None, 1.0)
         self._policy = policy_value_fn
         self._c_puct = c_puct
@@ -417,7 +426,7 @@ class MCTS:
 class MCTSMutater:
     """AI mutater based on MCTS."""
 
-    def __init__(self, policy_value_function, c_puct=5, n_playout=30, is_selfplay=1):
+    def __init__(self, policy_value_function, c_puct=5, n_playout=10, is_selfplay=1):
         self.mcts = MCTS(policy_value_function, c_puct, n_playout)
         self._is_selfplay = is_selfplay
 
@@ -459,11 +468,16 @@ from torch.autograd import Variable
 
 
 class Net(nn.Module):
-    """Policy-value network module adapted for longer sequences like AAV (28 aa)."""
+    """Policy-value network module adapted for long sequences like GFP (237 aa).
+
+    WARNING: The action space for GFP is 237 x 20 = 4,740, which is very large
+    compared to GB1 (4 x 20 = 80) or AAV (28 x 20 = 560). This results in large
+    fully connected layers and higher memory/compute requirements.
+    """
 
     def __init__(self, board_width, board_height):
         super(Net, self).__init__()
-        self.board_width = board_width  # sequence length (28 for AAV)
+        self.board_width = board_width  # sequence length (237 for GFP)
         self.board_height = board_height  # vocab size (20 amino acids)
 
         # Use smaller kernels and appropriate padding for sequence length
@@ -602,12 +616,12 @@ class EvoPlayTrainer:
         features: np.ndarray,
         fitness: np.ndarray,
         seed: int,
-        n_playout: int = 30,
+        n_playout: int = 10,
         c_puct: int = 10,
         use_gpu: bool = False,
         gpu_device: int = 0,
         batch_size: int = 96,
-        n_rounds: int = 15
+        n_rounds: int = 5
     ):
         self.seq_len = len(start_seq_pool[0])
         self.vocab_size = len(alphabet)
@@ -795,7 +809,7 @@ class EvoPlayTrainer:
                     update_round_d = sorted(update_predictor_dict.items(), key=lambda x: x[1], reverse=True)
                     new_pool = [k for k, v in update_round_d]
                     if verbose >= 2:
-                        print(f"  New start pool: {len(new_pool)} seqs, first: '{new_pool[0] if new_pool else 'EMPTY'}' len={len(new_pool[0]) if new_pool else 0}")
+                        print(f"  New start pool: {len(new_pool)} seqs, first: '{new_pool[0][:20] if new_pool else 'EMPTY'}...' len={len(new_pool[0]) if new_pool else 0}")
                     if new_pool:
                         self.seq_env.start_seq_pool = new_pool
                     self.seq_env.model = update_model
@@ -834,19 +848,19 @@ class EvoPlayTrainer:
 # Main Experiment Functions
 # ============================================================================
 
-def load_aav_hard_data(data_dir: str = None) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+def load_gfp_med_data(data_dir: str = None) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
-    Load AAV hard dataset from:
-    /home/xux/Desktop/AlphaVariant/Benchmark/data/AAV_hard/data.csv
+    Load GFP medium dataset from:
+    /home/xux/Desktop/AlphaVariant/Benchmark/data/GFP_med/data.csv
     """
-    # Default AAV_hard data path
+    # Default GFP_med data path
     if data_dir is None:
         data_dir = '/home/xux/Desktop/AlphaVariant/Benchmark/data'
 
-    data_path = os.path.join(data_dir, 'AAV_hard', 'data.csv')
+    data_path = os.path.join(data_dir, 'GFP_med', 'data.csv')
 
     if not os.path.exists(data_path):
-        raise FileNotFoundError(f"AAV hard data not found at {data_path}")
+        raise FileNotFoundError(f"GFP medium data not found at {data_path}")
 
     fitness_df = pd.read_csv(data_path)
     sequences = fitness_df['seq'].tolist()
@@ -859,10 +873,11 @@ def load_aav_hard_data(data_dir: str = None) -> Tuple[np.ndarray, np.ndarray, Li
         features.append(oh.flatten())
     features = np.array(features)
 
-    print(f"Loaded AAV hard data from: {data_path}")
+    print(f"Loaded GFP medium data from: {data_path}")
     print(f"  Total sequences: {len(sequences)}")
     print(f"  Sequence length: {len(sequences[0])}")
     print(f"  Fitness range: [{fitness.min():.4f}, {fitness.max():.4f}]")
+    print(f"  WARNING: Action space = {len(sequences[0])} x 20 = {len(sequences[0]) * 20} (very large, expect slow MCTS)")
 
     return features, fitness, sequences
 
@@ -870,20 +885,25 @@ def load_aav_hard_data(data_dir: str = None) -> Tuple[np.ndarray, np.ndarray, Li
 def run_single_experiment(
     seed: int,
     data_dir: Optional[str] = None,
-    output_path: str = "results/AAV_hard_EvoPlay_experiments/",
+    output_path: str = "results/GFP_med_EvoPlay_experiments/",
     verbose: int = 2,
     run_id: Optional[int] = None,
     compute_metrics: bool = True,
-    n_playout: int = 30,
+    n_playout: int = 10,
     use_gpu: bool = False,
     gpu_device: int = 0,
     batch_size: int = 96,
-    n_rounds: int = 15
+    n_rounds: int = 5
 ) -> Dict[str, Any]:
-    """Run a single EvoPlay experiment on AAV hard dataset."""
+    """Run a single EvoPlay experiment on GFP medium dataset.
+
+    NOTE: GFP sequences are 237 aa, giving an action space of 4,740. This is ~8.5x
+    larger than AAV (560) and ~59x larger than GB1 (80). Each MCTS playout is
+    proportionally more expensive. Default n_playout is 10 and n_rounds is 5.
+    """
 
     # Configuration
-    protein = "AAV_hard"
+    protein = "GFP_med"
     n_clusters = 30
     num_first_round = 96
 
@@ -893,7 +913,7 @@ def run_single_experiment(
     total_samples = batch_size * n_rounds
 
     print(f"\n{'='*60}")
-    print(f"Starting EvoPlay optimization on AAV hard")
+    print(f"Starting EvoPlay optimization on GFP medium")
     print(f"  Seed: {seed}")
     print(f"  Model: GP + MCTS with Policy-Value Network")
     print(f"  Encoding: One-hot")
@@ -901,13 +921,15 @@ def run_single_experiment(
     print(f"  Batch size: {batch_size}")
     print(f"  Rounds: {n_rounds}")
     print(f"  Total target samples: {total_samples}")
+    print(f"  MCTS playouts: {n_playout}")
+    print(f"  Action space: 237 x 20 = 4740 (WARNING: very large)")
     print(f"  GPU: {'cuda:' + str(gpu_device) if use_gpu else 'CPU'}")
     print(f"{'='*60}\n")
 
     set_seed(seed)
 
     # Load data
-    features, fitness, sequences = load_aav_hard_data(data_dir)
+    features, fitness, sequences = load_gfp_med_data(data_dir)
     fitness_normalized = fitness  # Already normalized in data
 
     # Create output directory
@@ -962,7 +984,7 @@ def run_single_experiment(
     first_round_d = sorted(combo_to_fitness_first_round.items(), key=lambda x: x[1], reverse=True)
     start_pool = [k for k, v in first_round_d]
 
-    # Safety check: exclude wild-type from start_pool (WT has max fitness in AAV)
+    # Safety check: exclude wild-type from start_pool (WT has max fitness in GFP)
     wildtype = get_wildtype_sequence(protein)
     if wildtype and wildtype in start_pool:
         start_pool.remove(wildtype)
@@ -971,7 +993,7 @@ def run_single_experiment(
     if not start_pool:
         raise ValueError("No valid starting sequences after excluding wild-type")
 
-    print(f"  Starting sequence: {start_pool[0]} (fitness: {combo_to_fitness_first_round.get(start_pool[0], 'N/A'):.4f})")
+    print(f"  Starting sequence: {start_pool[0][:30]}... (fitness: {combo_to_fitness_first_round.get(start_pool[0], 'N/A'):.4f})")
 
     # Get first round indices
     first_round_index = []
@@ -1310,13 +1332,13 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
     summary_df = pd.DataFrame(summary_data)
 
     # Save to CSV
-    summary_path = os.path.join(output_path, 'AAV_hard', 'onehot', 'aggregated_metrics.csv')
+    summary_path = os.path.join(output_path, 'GFP_med', 'onehot', 'aggregated_metrics.csv')
     os.makedirs(os.path.dirname(summary_path), exist_ok=True)
     summary_df.to_csv(summary_path, index=False)
     print(f"\n\nFinal aggregated metrics saved to: {summary_path}")
 
     # Save complete aggregated results to JSON (including checkpoint metrics)
-    aggregated_json_path = os.path.join(output_path, 'AAV_hard', 'onehot', 'aggregated_results.json')
+    aggregated_json_path = os.path.join(output_path, 'GFP_med', 'onehot', 'aggregated_results.json')
     with open(aggregated_json_path, 'w') as f:
         json.dump({
             'aggregated_metrics_final': aggregated_final,
@@ -1368,27 +1390,31 @@ def run_experiment_wrapper(args_tuple):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run EvoPlay optimization on AAV hard dataset with GP + MCTS + Policy-Value Network",
+        description="Run EvoPlay optimization on GFP medium dataset with GP + MCTS + Policy-Value Network",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+WARNING: GFP sequences are 237 aa long, giving an MCTS action space of 4,740.
+This is much larger than AAV (560) or GB1 (80). Expect long runtimes.
+Defaults are reduced: n_playout=10 (vs 30), n_rounds=5 (vs 15).
+
 Examples:
   # Single run with default seed
-  python run_AAV_hard.py
+  python run_GFP_med.py
 
   # Single run with specific seed
-  python run_AAV_hard.py --seed 42
+  python run_GFP_med.py --seed 42
 
   # Multiple runs for randomness evaluation
-  python run_AAV_hard.py --seeds 42 123 456 789 1000
+  python run_GFP_med.py --seeds 42 123 456 789 1000
 
   # Load seeds from file
-  python run_AAV_hard.py --seed_file ../rand_seeds.txt --num_seeds 5
+  python run_GFP_med.py --seed_file ../rand_seeds.txt --num_seeds 5
 
   # Skip metrics computation
-  python run_AAV_hard.py --seed 42 --skip_metrics
+  python run_GFP_med.py --seed 42 --skip_metrics
 
-  # Use GPU device 1
-  python run_AAV_hard.py --seed_file ../rand_seeds.txt --num_seeds 5 --gpu_device 1 --use_gpu
+  # Use GPU device 1 (recommended for GFP due to large network)
+  python run_GFP_med.py --seed_file ../rand_seeds.txt --num_seeds 5 --gpu_device 1 --use_gpu
         """
     )
 
@@ -1429,8 +1455,8 @@ Examples:
     parser.add_argument(
         "--output_path",
         type=str,
-        default="results/AAV_hard_EvoPlay_experiments/",
-        help="Output directory for results (default: results/AAV_hard_EvoPlay_experiments/)"
+        default="results/GFP_med_EvoPlay_experiments/",
+        help="Output directory for results (default: results/GFP_med_EvoPlay_experiments/)"
     )
 
     # Batch and rounds configuration
@@ -1443,8 +1469,8 @@ Examples:
     parser.add_argument(
         "--n_rounds",
         type=int,
-        default=15,
-        help="Number of optimization rounds (default: 15)"
+        default=5,
+        help="Number of optimization rounds (default: 5, reduced from 15 for GFP due to large action space)"
     )
 
     # Other options
@@ -1458,13 +1484,13 @@ Examples:
     parser.add_argument(
         "--n_playout",
         type=int,
-        default=30,
-        help="Number of MCTS playouts per move (default: 30)"
+        default=10,
+        help="Number of MCTS playouts per move (default: 10, reduced from 30 for GFP due to large action space)"
     )
     parser.add_argument(
         "--use_gpu",
         action="store_true",
-        help="Use GPU for policy-value network"
+        help="Use GPU for policy-value network (recommended for GFP)"
     )
     parser.add_argument(
         "--gpu_device",
@@ -1498,11 +1524,13 @@ Examples:
     else:
         seeds = [64]
 
-    print(f"\nRunning EvoPlay on AAV hard with {len(seeds)} seed(s): {seeds[:10]}{'...' if len(seeds) > 10 else ''}")
+    print(f"\nRunning EvoPlay on GFP medium with {len(seeds)} seed(s): {seeds[:10]}{'...' if len(seeds) > 10 else ''}")
     print(f"Data directory: {args.data_dir}")
     print(f"Output path: {args.output_path}")
     print(f"Batch size: {args.batch_size}")
     print(f"Rounds: {args.n_rounds}")
+    print(f"MCTS playouts: {args.n_playout}")
+    print(f"Action space: 237 x 20 = 4740 (WARNING: computationally expensive)")
     print(f"Compute metrics: {not args.skip_metrics}")
     print(f"GPU device: {args.gpu_device if args.use_gpu else 'CPU'}")
     print(f"Parallel workers: {args.n_workers}")
@@ -1593,6 +1621,7 @@ Examples:
     print(f"  - Batch size: {args.batch_size}")
     print(f"  - Rounds: {args.n_rounds}")
     print(f"  - MCTS playouts: {args.n_playout}")
+    print(f"  - Action space: 237 x 20 = 4740")
     print(f"  - Workers: {args.n_workers}")
     print(f"  - GPU: {'cuda:' + str(args.gpu_device) if args.use_gpu else 'CPU'}")
     print(f"\nResults saved to: {args.output_path}")

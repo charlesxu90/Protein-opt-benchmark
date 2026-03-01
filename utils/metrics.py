@@ -1071,3 +1071,185 @@ def compute_all_metrics(
         results['global_max_hit_count'] = float('nan')
 
     return results
+
+
+# =============================================================================
+# Additional Metrics: AUOC and Hit Rate
+# =============================================================================
+
+def area_under_optimization_curve(
+    fitness_trajectory: Sequence[float],
+    global_max_fitness: float,
+    normalize: bool = True
+) -> float:
+    """
+    Compute the Area Under the Optimization Curve (AUOC).
+
+    The optimization curve tracks the best fitness found at each round.
+    AUOC summarizes overall optimization performance in a single scalar.
+
+    Parameters
+    ----------
+    fitness_trajectory : Sequence[float]
+        Best fitness per round (cumulative max). Length = n_rounds.
+    global_max_fitness : float
+        Global maximum fitness in the landscape (for normalization).
+    normalize : bool, default=True
+        If True, normalize by (n_rounds * global_max_fitness) so AUOC
+        is in [0, 1]. A perfect optimizer scores 1.0.
+
+    Returns
+    -------
+    float
+        AUOC value. Higher is better.
+
+    Examples
+    --------
+    >>> area_under_optimization_curve([0.5, 0.7, 0.9, 1.0], 1.0)
+    0.775
+    >>> area_under_optimization_curve([1.0, 1.0, 1.0, 1.0], 1.0)
+    1.0
+    """
+    trajectory = np.array(fitness_trajectory, dtype=float)
+    if len(trajectory) == 0:
+        return float('nan')
+
+    # Ensure cumulative max
+    cum_max = np.maximum.accumulate(trajectory)
+
+    # Compute area using trapezoidal rule
+    area = float(np.trapz(cum_max, dx=1.0))
+
+    if normalize and global_max_fitness > 0:
+        max_area = (len(trajectory) - 1) * global_max_fitness
+        if max_area > 0:
+            area /= max_area
+        else:
+            area = float(cum_max[0] / global_max_fitness) if len(trajectory) == 1 else float('nan')
+
+    return area
+
+
+def hit_rate(
+    generated_fitness: Sequence[float],
+    threshold: float
+) -> float:
+    """
+    Compute the fraction of generated sequences with fitness >= threshold.
+
+    Parameters
+    ----------
+    generated_fitness : Sequence[float]
+        Fitness values of generated sequences.
+    threshold : float
+        Fitness threshold to count as a "hit".
+
+    Returns
+    -------
+    float
+        Fraction of sequences meeting the threshold, in [0, 1].
+
+    Examples
+    --------
+    >>> hit_rate([0.3, 0.5, 0.7, 0.9, 1.0], 0.5)
+    0.8
+    >>> hit_rate([0.1, 0.2, 0.3], 0.5)
+    0.0
+    """
+    fitness = np.array(generated_fitness, dtype=float)
+    if len(fitness) == 0:
+        return float('nan')
+    return float(np.mean(fitness >= threshold))
+
+
+# =============================================================================
+# Statistical Comparison
+# =============================================================================
+
+def paired_comparison(
+    values_a: Sequence[float],
+    values_b: Sequence[float],
+    test: str = 'wilcoxon',
+    alternative: str = 'two-sided'
+) -> tuple:
+    """
+    Perform a paired statistical comparison between two methods.
+
+    Parameters
+    ----------
+    values_a : Sequence[float]
+        Metric values from method A (one per seed/run).
+    values_b : Sequence[float]
+        Metric values from method B (one per seed/run).
+    test : str, default='wilcoxon'
+        Statistical test to use:
+        - 'wilcoxon': Wilcoxon signed-rank test (paired, non-parametric)
+        - 'mannwhitney': Mann-Whitney U test (unpaired, non-parametric)
+        - 'ttest': Paired t-test (parametric)
+        - 'permutation': Permutation test on mean difference
+    alternative : str, default='two-sided'
+        Alternative hypothesis: 'two-sided', 'greater', or 'less'.
+
+    Returns
+    -------
+    tuple of (statistic, p_value)
+        Test statistic and p-value.
+
+    Examples
+    --------
+    >>> a = [0.8, 0.85, 0.78, 0.82, 0.79]
+    >>> b = [0.7, 0.72, 0.68, 0.71, 0.69]
+    >>> stat, pval = paired_comparison(a, b, test='wilcoxon')
+    """
+    a = np.array(values_a, dtype=float)
+    b = np.array(values_b, dtype=float)
+
+    # Remove NaN pairs
+    mask = ~(np.isnan(a) | np.isnan(b))
+    a, b = a[mask], b[mask]
+
+    if len(a) < 2:
+        return (float('nan'), float('nan'))
+
+    from scipy import stats as scipy_stats
+
+    if test == 'wilcoxon':
+        diff = a - b
+        # Wilcoxon requires non-zero differences
+        if np.all(diff == 0):
+            return (0.0, 1.0)
+        result = scipy_stats.wilcoxon(diff, alternative=alternative)
+        return (float(result.statistic), float(result.pvalue))
+
+    elif test == 'mannwhitney':
+        result = scipy_stats.mannwhitneyu(a, b, alternative=alternative)
+        return (float(result.statistic), float(result.pvalue))
+
+    elif test == 'ttest':
+        result = scipy_stats.ttest_rel(a, b, alternative=alternative)
+        return (float(result.statistic), float(result.pvalue))
+
+    elif test == 'permutation':
+        observed_diff = float(np.mean(a) - np.mean(b))
+        n_permutations = 10000
+        combined = np.concatenate([a, b])
+        n = len(a)
+        rng = np.random.RandomState(42)
+        count = 0
+        for _ in range(n_permutations):
+            perm = rng.permutation(combined)
+            perm_diff = np.mean(perm[:n]) - np.mean(perm[n:])
+            if alternative == 'two-sided':
+                if abs(perm_diff) >= abs(observed_diff):
+                    count += 1
+            elif alternative == 'greater':
+                if perm_diff >= observed_diff:
+                    count += 1
+            elif alternative == 'less':
+                if perm_diff <= observed_diff:
+                    count += 1
+        p_value = (count + 1) / (n_permutations + 1)
+        return (observed_diff, p_value)
+
+    else:
+        raise ValueError(f"Unknown test: {test}. Use 'wilcoxon', 'mannwhitney', 'ttest', or 'permutation'")

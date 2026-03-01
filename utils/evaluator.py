@@ -32,6 +32,8 @@ from .metrics import (
     expected_calibration_error,
     regression_calibration_error,
     levenshtein_distance,
+    area_under_optimization_curve,
+    hit_rate,
 )
 from .data import (
     FitnessLandscape,
@@ -75,6 +77,10 @@ class RoundMetrics:
     miscalibration_area: float = float('nan')
     expected_calibration_error: float = float('nan')
 
+    # Optimization curve and hit rate
+    auoc: float = float('nan')
+    hit_rate_value: float = float('nan')
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -93,6 +99,8 @@ class RoundMetrics:
             'recall_high_order': self.recall_high_order,
             'miscalibration_area': self.miscalibration_area,
             'expected_calibration_error': self.expected_calibration_error,
+            'auoc': self.auoc,
+            'hit_rate': self.hit_rate_value,
         }
 
 
@@ -240,6 +248,8 @@ class BenchmarkEvaluator:
         'miscalibration_area',
         'expected_calibration_error',
         'global_max_hit_count',
+        'auoc',
+        'hit_rate',
     ]
 
     def __init__(

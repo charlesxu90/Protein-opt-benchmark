@@ -38,6 +38,13 @@ from .metrics import (
     # Calibration metrics
     miscalibration_area,
     expected_calibration_error,
+
+    # Optimization curve and hit rate
+    area_under_optimization_curve,
+    hit_rate,
+
+    # Statistical comparison
+    paired_comparison,
 )
 
 from .evaluator import BenchmarkEvaluator
@@ -96,6 +103,13 @@ __all__ = [
     # Calibration metrics
     'miscalibration_area',
     'expected_calibration_error',
+
+    # Optimization curve and hit rate
+    'area_under_optimization_curve',
+    'hit_rate',
+
+    # Statistical comparison
+    'paired_comparison',
 
     # Evaluator
     'BenchmarkEvaluator',

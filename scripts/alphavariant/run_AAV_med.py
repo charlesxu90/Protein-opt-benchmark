@@ -188,6 +188,10 @@ class IterativeAAVTrainer:
         self.agent_model = None
         self.optimizer = None
 
+        # Track best sequence from collected data
+        self.best_seq = None
+        self.best_fitness = -np.inf
+
         # TensorBoard writer for logging
         self.writer = SummaryWriter(save_dir)
         self.global_step = 0
@@ -375,6 +379,12 @@ class IterativeAAVTrainer:
         fitness_tensor = torch.from_numpy(fitness).float().to(self.device)
         temperature = 1.0
         weights = F.softmax(fitness_tensor / temperature, dim=0)
+
+        # Give extra weight to best sequence if present
+        if self.best_seq is not None and self.best_seq in seqs:
+            best_idx = seqs.index(self.best_seq)
+            weights[best_idx] *= 2.0  # Double the weight for best sequence
+            weights = weights / weights.sum()  # Renormalize
 
         n_seqs = len(seqs)
         seq_len = all_tokens.size(1)
@@ -899,6 +909,16 @@ class IterativeAAVTrainer:
 
             # Get ground truth fitness
             new_fitness = self._get_ground_truth_fitness(new_seqs)
+
+            # Update best sequence tracking
+            max_idx = np.argmax(new_fitness)
+            if new_fitness[max_idx] > self.best_fitness:
+                self.best_fitness = float(new_fitness[max_idx])
+                self.best_seq = new_seqs[max_idx]
+                if round_idx == 0:
+                    logger.info(f"Initial best sequence (fitness: {self.best_fitness:.4f})")
+                else:
+                    logger.info(f"New best sequence found (fitness: {self.best_fitness:.4f})")
 
             # Add to collected data
             self.collected_seqs.extend(new_seqs)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-run_AAV_med.py - Execute AiCE optimization on AAV medium dataset with comprehensive metrics
+run_GFP_hard.py - Execute AiCE optimization on GFP hard dataset with comprehensive metrics
 
 AiCE (AI-guided Combinatorial Editing) uses inverse folding models (ProteinMPNN)
 with structural and evolutionary constraints to predict high-fitness mutations.
@@ -10,7 +10,7 @@ Configuration:
     - Scoring: Frequency-based filtering with beta/gamma thresholds
     - Multi-mutation: LD (Linkage Disequilibrium) and SCA (Statistical Coupling Analysis)
     - Batch size: 96 (for fair comparison with ALDE)
-    - Rounds: 15 (1 initial + 14 iterations)
+    - Rounds: 5 (1 initial + 4 iterations, simulated via score ranking)
 
 Metrics computed (same as ALDE for comparison):
     - Exploration: High-Fitness Proximity, Novelty, Batch Diversity
@@ -20,19 +20,19 @@ Metrics computed (same as ALDE for comparison):
 
 Usage:
     # Single run with default seed
-    python run_AAV_med.py
+    python run_GFP_hard.py
 
     # Single run with specific seed
-    python run_AAV_med.py --seed 42
+    python run_GFP_hard.py --seed 42
 
     # Multiple runs with different seeds
-    python run_AAV_med.py --seeds 42 123 456 789 1000
+    python run_GFP_hard.py --seeds 42 123 456 789 1000
 
-    # Use predefined seeds from file (5 runs)
-    python run_AAV_med.py --seed_file ../rand_seeds.txt --num_seeds 5
+    # Use predefined seeds from file (50 runs)
+    python run_GFP_hard.py --seed_file ../rand_seeds.txt --num_seeds 50
 
     # Skip metrics computation (faster)
-    python run_AAV_med.py --seed 42 --skip_metrics
+    python run_GFP_hard.py --seed 42 --skip_metrics
 """
 
 from __future__ import annotations
@@ -77,13 +77,13 @@ from utils.compat import (
 )
 
 # =============================================================================
-# AAV Constants
+# GFP Constants
 # =============================================================================
 
-# AAV wild-type sequence (28 amino acids)
-AAV_WILDTYPE = "DEEEIRTTNPVATEQYGSYSTNLQQGNR"
+# GFP wild-type sequence (237 amino acids)
+GFP_WILDTYPE = "SKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKQHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKIRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYK"
 
-AAV_LENGTH = 28
+GFP_LENGTH = 237
 
 
 # =============================================================================
@@ -102,12 +102,12 @@ class AiCEConfig:
 
 
 # =============================================================================
-# AiCE Scorer for AAV
+# AiCE Scorer for GFP
 # =============================================================================
 
 class AiCEScorer:
     """
-    AiCE scoring for AAV mutations.
+    AiCE scoring for GFP mutations.
 
     Uses frequency-based scoring from ProteinMPNN inverse folding or
     simulated frequencies from the fitness landscape.
@@ -117,10 +117,6 @@ class AiCEScorer:
        from inverse folding samples (structure-compatible sequences)
     2. Multi-mutations: Consider LD (linkage disequilibrium) and SCA
        (statistical coupling analysis) to identify compatible combinations
-
-    Note: For AAV datasets, we use the best sequence from the initial sample
-    as the reference (instead of wild-type) since wild-type is the best in AAV,
-    which would create unfair bias.
     """
 
     def __init__(
@@ -128,16 +124,14 @@ class AiCEScorer:
         sequences: List[str],
         fitness: np.ndarray,
         config: AiCEConfig = None,
-        reference_seq: str = None,
-        initial_seqs: List[str] = None,
+        wildtype: str = GFP_WILDTYPE,
         freq_data: Optional[Dict] = None
     ):
         self.sequences = sequences
         self.fitness = fitness
         self.config = config or AiCEConfig()
-        self.reference_seq = reference_seq if reference_seq else AAV_WILDTYPE
-        self.initial_seqs = initial_seqs or []
-        self.seq_length = len(self.reference_seq)
+        self.wildtype = wildtype
+        self.seq_length = len(wildtype)
 
         # Build sequence to index mapping
         self.seq_to_idx = {seq: idx for idx, seq in enumerate(sequences)}
@@ -175,26 +169,34 @@ class AiCEScorer:
         Compute position-specific amino acid frequencies.
 
         In the actual AiCE pipeline, this comes from ProteinMPNN inverse folding.
-        Here we simulate it using ONLY the initial/observed sequences to avoid
-        using oracle fitness information from the full landscape.
-
-        This ensures fair comparison with other methods that don't have access
-        to global fitness values.
+        Here we simulate it using a combination of:
+        1. High-fitness sequences (top 10%)
+        2. Evolutionary coupling patterns
         """
         freq_data = {}
 
-        # IMPORTANT: Only use initial sequences as templates
-        # Using global top 10% would be oracle cheating since those fitness
-        # values wouldn't be available in a real experiment
-        template_seqs = self.initial_seqs if self.initial_seqs else []
+        # Use top percentile as "structure-compatible" sequences
+        # This simulates what ProteinMPNN would output
+        threshold = np.percentile(self.fitness, 90)
+        high_fit_mask = self.fitness >= threshold
+        high_fit_seqs = [seq for seq, is_high in zip(self.sequences, high_fit_mask) if is_high]
+
+        # Also consider wildtype-like sequences (low mutation count) as structural templates
+        wt = self.wildtype
+        wt_like = []
+        for seq in self.sequences:
+            try:
+                if hamming_distance(seq, wt) <= 2:
+                    wt_like.append(seq)
+            except ValueError:
+                # Sequences may have different lengths, skip
+                continue
+
+        # Combine both sets with weights
+        template_seqs = high_fit_seqs + wt_like * 2  # Weight WT-like sequences
 
         if not template_seqs:
-            # Fallback to uniform frequencies if no initial sequences
-            for pos in range(self.seq_length):
-                freq_data[pos] = {}
-                for aa in self.amino_acids:
-                    freq_data[pos][aa] = 1.0 / len(self.amino_acids)
-            return freq_data
+            template_seqs = self.sequences[:100]  # Fallback
 
         for pos in range(self.seq_length):
             freq_data[pos] = {}
@@ -210,8 +212,6 @@ class AiCEScorer:
 
         LD measures the non-random association of alleles at different positions.
         High LD between positions suggests they should mutate together.
-
-        IMPORTANT: Only uses initial sequences to avoid oracle cheating.
         """
         n_pos = len(self.variable_positions)
         if n_pos == 0:
@@ -219,10 +219,12 @@ class AiCEScorer:
 
         ld_matrix = np.ones((n_pos, n_pos))
 
-        # Use only initial sequences to compute LD (no oracle cheating)
-        ld_seqs = self.initial_seqs if self.initial_seqs else []
+        # Use high-fitness sequences to compute LD
+        threshold = np.percentile(self.fitness, 90)
+        high_fit_mask = self.fitness >= threshold
+        high_fit_seqs = [seq for seq, is_high in zip(self.sequences, high_fit_mask) if is_high]
 
-        if len(ld_seqs) < 10:
+        if len(high_fit_seqs) < 10:
             return ld_matrix
 
         for i, pos_i in enumerate(self.variable_positions):
@@ -232,7 +234,7 @@ class AiCEScorer:
 
                 # Count co-occurrences
                 pair_counts = {}
-                for seq in ld_seqs:
+                for seq in high_fit_seqs:
                     if len(seq) > max(pos_i, pos_j):
                         pair = (seq[pos_i], seq[pos_j])
                         pair_counts[pair] = pair_counts.get(pair, 0) + 1
@@ -269,13 +271,13 @@ class AiCEScorer:
 
             # LD bonus for multi-mutations
             try:
-                n_muts = hamming_distance(seq, self.reference_seq)
+                n_muts = hamming_distance(seq, self.wildtype)
             except ValueError:
                 n_muts = 0
 
             if n_muts >= 2 and len(self.variable_positions) > 1:
                 # Get mutated positions
-                mut_positions = [i for i, (a, b) in enumerate(zip(seq, self.reference_seq)) if a != b]
+                mut_positions = [i for i, (a, b) in enumerate(zip(seq, self.wildtype)) if a != b]
 
                 # Find indices in variable_positions
                 mut_var_indices = []
@@ -488,35 +490,26 @@ def recall_high_order_mutants(
 
 
 # =============================================================================
-# AAV Data Loading
+# GFP Data Loading
 # =============================================================================
 
-def load_aav_data(data_dir: str, n_init: int = 96, seed: int = 42) -> Tuple[List[str], np.ndarray, pd.DataFrame, List[int]]:
+def load_gfp_data(data_dir: str) -> Tuple[List[str], np.ndarray, pd.DataFrame]:
     """
-    Load AAV medium fitness landscape data with percentile-based initial sampling.
-
-    For medium difficulty, initial samples are selected from the 40th-60th percentile
-    of fitness values, matching LatProtRL's setup.
-
-    Args:
-        data_dir: Base directory for data files
-        n_init: Number of initial samples to select
-        seed: Random seed for reproducible sampling
+    Load GFP hard fitness landscape data.
 
     Returns:
-        sequences: List of full AAV sequences
+        sequences: List of full GFP sequences
         fitness: Normalized fitness values
         df: Full dataframe
-        initial_indices: Indices of initial samples (40th-60th percentile)
     """
-    data_path = os.path.join(data_dir, "AAV_med", "data.csv")
+    data_path = os.path.join(data_dir, "GFP_hard", "data.csv")
 
     if not os.path.exists(data_path):
-        raise FileNotFoundError(f"AAV data not found at {data_path}")
+        raise FileNotFoundError(f"GFP data not found at {data_path}")
 
     df = pd.read_csv(data_path)
 
-    # Get sequences (full 28 AA sequences)
+    # Get sequences (full 237 AA sequences)
     if 'seq' in df.columns:
         sequences = df['seq'].tolist()
     elif 'sequence' in df.columns:
@@ -533,19 +526,7 @@ def load_aav_data(data_dir: str, n_init: int = 96, seed: int = 42) -> Tuple[List
     if fitness_max > fitness_min:
         fitness = (fitness - fitness_min) / (fitness_max - fitness_min)
 
-    # Select initial samples from 40th-60th percentile (medium difficulty)
-    # This matches LatProtRL's setup for AAV_med
-    threshold_low = np.percentile(fitness, 40)
-    threshold_high = np.percentile(fitness, 60)
-    candidate_mask = (fitness >= threshold_low) & (fitness <= threshold_high)
-    candidate_indices = np.where(candidate_mask)[0]
-
-    # Sample n_init from candidates using the provided seed
-    rng = np.random.RandomState(seed)
-    sample_size = min(n_init, len(candidate_indices))
-    initial_indices = rng.choice(candidate_indices, size=sample_size, replace=False).tolist()
-
-    return sequences, fitness, df, initial_indices
+    return sequences, fitness, df
 
 
 # =============================================================================
@@ -564,7 +545,7 @@ def set_seed(seed: int) -> None:
 
 def run_single_experiment(
     seed: int,
-    output_path: str = "results/",
+    output_path: str = "results/GFP_hard_AiCE/",
     verbose: int = 2,
     run_id: Optional[int] = None,
     compute_metrics: bool = True,
@@ -572,13 +553,13 @@ def run_single_experiment(
     aice_config: Optional[AiCEConfig] = None
 ) -> Dict[str, Any]:
     """
-    Run a single AiCE optimization experiment on AAV medium dataset.
+    Run a single AiCE optimization experiment on GFP hard dataset.
 
     Since AiCE is primarily a one-shot prediction method, we simulate
     iterative optimization by:
-    1. Starting with percentile-based initial samples (40th-60th percentile for medium)
+    1. Starting with random initial samples
     2. Using AiCE scores to guide batch selection
-    3. Using best initial sequence as reference (instead of wild-type)
+    3. Comparing results against ALDE's iterative approach
 
     Args:
         seed: Random seed for reproducibility
@@ -606,7 +587,7 @@ def run_single_experiment(
         aice_config = AiCEConfig()
 
     print(f"\n{'='*60}")
-    print(f"Starting AiCE optimization on AAV (medium)")
+    print(f"Starting AiCE optimization on GFP (medium)")
     print(f"  Seed: {seed}")
     print(f"  Model: AiCE (ProteinMPNN-based scoring)")
     print(f"  Beta (non-coil threshold): {aice_config.beta}")
@@ -616,14 +597,13 @@ def run_single_experiment(
     print(f"  Budget: {budget}")
     print(f"  Total samples: {total_samples}")
     print(f"  Rounds: {n_rounds} (1 init + {n_rounds - 1} iterations)")
-    print(f"  Initial sampling: 40th-60th percentile (medium difficulty)")
     print(f"{'='*60}\n")
 
     # Set random seeds
     set_seed(seed)
 
-    # Load data with percentile-based initial sampling
-    all_sequences, all_fitness, df, initial_indices = load_aav_data(data_dir, n_init=n_init, seed=seed)
+    # Load data
+    all_sequences, all_fitness, df = load_gfp_data(data_dir)
     global_max = np.max(all_fitness)
     global_min = np.min(all_fitness)
 
@@ -632,33 +612,20 @@ def run_single_experiment(
         print(f"Sequence length: {len(all_sequences[0])}")
         print(f"Fitness range: [{global_min:.4f}, {global_max:.4f}]")
 
-    # Find best sequence from initial sample to use as reference
-    # (instead of wild-type, since wild-type is the best in AAV)
-    initial_fitness = all_fitness[initial_indices]
-    best_initial_idx = initial_indices[np.argmax(initial_fitness)]
-    reference_seq = all_sequences[best_initial_idx]
-    initial_seqs = [all_sequences[i] for i in initial_indices]
-
-    if verbose >= 1:
-        print(f"Initial samples from 40th-60th percentile")
-        print(f"  Initial fitness range: [{np.min(initial_fitness):.4f}, {np.max(initial_fitness):.4f}]")
-        print(f"  Using best initial sequence as reference (fitness={all_fitness[best_initial_idx]:.4f})")
-
-    # Initialize AiCE scorer with reference sequence and initial sequences
+    # Initialize AiCE scorer
     print("Initializing AiCE scorer...")
-    scorer = AiCEScorer(
-        all_sequences,
-        all_fitness,
-        aice_config,
-        reference_seq=reference_seq,
-        initial_seqs=initial_seqs
-    )
+    scorer = AiCEScorer(all_sequences, all_fitness, aice_config, wildtype=GFP_WILDTYPE)
 
     # Create output directory
-    subdir = os.path.join(output_path, "AAV_med", "aice", "")
+    subdir = os.path.join(output_path, "GFP_hard", "aice", "")
     os.makedirs(subdir, exist_ok=True)
 
-    # Track all queries (starting with percentile-based initial samples)
+    # Random initialization (matching ALDE)
+    all_indices = list(range(len(all_sequences)))
+    random.shuffle(all_indices)
+    initial_indices = all_indices[:n_init]
+
+    # Track all queries
     queried_indices = list(initial_indices)
     queried_set = set(queried_indices)
 
@@ -692,10 +659,7 @@ def run_single_experiment(
     result_path = os.path.join(subdir, f"AiCE-seed{seed}indices.pt")
     torch.save(queried_indices_tensor, result_path)
 
-    # Also save random baseline (for comparison)
-    all_indices = list(range(len(all_sequences)))
-    rng = np.random.RandomState(seed)
-    rng.shuffle(all_indices)
+    # Also save random baseline
     random_indices = all_indices[:total_samples]
     random_baseline_path = os.path.join(subdir, f'Random_{seed}indices.pt')
     torch.save(torch.tensor(random_indices), random_baseline_path)
@@ -712,7 +676,7 @@ def run_single_experiment(
         'n_queries': len(queried_indices),
         'config': {
             'model': 'AiCE',
-            'protein': 'AAV_med',
+            'protein': 'GFP_hard',
             'beta': aice_config.beta,
             'gamma': aice_config.gamma,
             'ld_threshold': aice_config.ld_threshold,
@@ -766,10 +730,10 @@ def run_single_experiment(
             holdout_pred = aice_scores[holdout_mask]
 
             metrics.epistatic_correlation = epistatic_score_correlation(
-                holdout_seqs, holdout_true, holdout_pred, reference_seq
+                holdout_seqs, holdout_true, holdout_pred, GFP_WILDTYPE
             )
             metrics.recall_high_order = recall_high_order_mutants(
-                holdout_seqs, holdout_true, holdout_pred, reference_seq,
+                holdout_seqs, holdout_true, holdout_pred, GFP_WILDTYPE,
                 min_mutations=2, top_k=100
             )
 
@@ -930,13 +894,13 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
     summary_df = pd.DataFrame(summary_data)
 
     # Save to CSV
-    summary_path = os.path.join(output_path, 'AAV_med', 'aice', 'aggregated_metrics.csv')
+    summary_path = os.path.join(output_path, 'GFP_hard', 'aice', 'aggregated_metrics.csv')
     os.makedirs(os.path.dirname(summary_path), exist_ok=True)
     summary_df.to_csv(summary_path, index=False)
     print(f"\nAggregated metrics saved to: {summary_path}")
 
     # Save complete aggregated results to JSON
-    aggregated_json_path = os.path.join(output_path, 'AAV_med', 'aice', 'aggregated_results.json')
+    aggregated_json_path = os.path.join(output_path, 'GFP_hard', 'aice', 'aggregated_results.json')
     with open(aggregated_json_path, 'w') as f:
         json.dump({
             'aggregated_metrics': aggregated,
@@ -948,7 +912,7 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
 
     # Print summary table
     print("\n" + "="*70)
-    print("AGGREGATED METRICS SUMMARY (AAV medium)")
+    print("AGGREGATED METRICS SUMMARY (GFP hard)")
     print("="*70)
     print(f"{'Metric':<40} {'Mean':>10} {'Std':>10}")
     print("-"*70)
@@ -963,24 +927,24 @@ def save_aggregated_results(results: List[Dict[str, Any]], output_path: str) -> 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run AiCE optimization on AAV medium dataset with frequency-based scoring",
+        description="Run AiCE optimization on GFP hard dataset with frequency-based scoring",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Single run with default seed
-  python run_AAV_med.py
+  python run_GFP_hard.py
 
   # Single run with specific seed
-  python run_AAV_med.py --seed 42
+  python run_GFP_hard.py --seed 42
 
   # Multiple runs for randomness evaluation
-  python run_AAV_med.py --seeds 42 123 456 789 1000
+  python run_GFP_hard.py --seeds 42 123 456 789 1000
 
-  # Load seeds from file (5 runs)
-  python run_AAV_med.py --seed_file ../rand_seeds.txt --num_seeds 5
+  # Load seeds from file (50 runs)
+  python run_GFP_hard.py --seed_file ../rand_seeds.txt --num_seeds 50
 
   # Skip metrics computation
-  python run_AAV_med.py --seed 42 --skip_metrics
+  python run_GFP_hard.py --seed 42 --skip_metrics
         """
     )
 
@@ -1072,7 +1036,7 @@ Examples:
         # Default seed
         seeds = [64]
 
-    print(f"\nRunning AiCE on AAV (medium) with {len(seeds)} seed(s): {seeds[:5]}{'...' if len(seeds) > 5 else ''}")
+    print(f"\nRunning AiCE on GFP (medium) with {len(seeds)} seed(s): {seeds[:5]}{'...' if len(seeds) > 5 else ''}")
     print(f"Output path: {args.output_path}")
     print(f"Data directory: {args.data_dir}")
     print(f"Compute metrics: {not args.skip_metrics}")
@@ -1110,7 +1074,7 @@ Examples:
     print(f"Total runs: {len(results)}")
     print(f"Configuration:")
     print(f"  - Model: AiCE (ProteinMPNN-based scoring)")
-    print(f"  - Protein: AAV (medium)")
+    print(f"  - Protein: GFP (medium)")
     print(f"  - Beta: {args.beta}")
     print(f"  - Gamma: {args.gamma}")
     print(f"  - Batch size: 96")

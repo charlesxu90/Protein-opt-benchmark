@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 """
-run_AAV_med.py - Execute AdaLead optimization on AAV medium dataset with comprehensive metrics
+run_generic.py - Execute AdaLead optimization on any dataset with comprehensive metrics
+
+A generic, dataset-agnostic runner for the FLEXS/AdaLead method. Works with any
+dataset that has a data.csv file with 'seq' and 'fitness' columns.
 
 Configuration:
     - Model: CNN Ensemble
@@ -17,19 +20,19 @@ Metrics computed (from multiple reference works):
 
 Usage:
     # Single run with default seed
-    python run_AAV_med.py
+    python run_generic.py --dataset AAV_med
 
     # Single run with specific seed
-    python run_AAV_med.py --seed 42
+    python run_generic.py --dataset GFP_med --seed 42
 
     # Multiple runs with different seeds for randomness evaluation
-    python run_AAV_med.py --seeds 42 123 456 789 1000
+    python run_generic.py --dataset GB1 --seeds 42 123 456 789 1000
 
     # Use predefined seeds from file
-    python run_AAV_med.py --seed_file ../rand_seeds.txt --num_seeds 5
+    python run_generic.py --dataset AAV_hard --seed_file ../rand_seeds.txt --num_seeds 5
 
     # Skip metrics computation (faster)
-    python run_AAV_med.py --seed 42 --skip_metrics
+    python run_generic.py --dataset AAV_med --seed 42 --skip_metrics
 """
 
 from __future__ import annotations
@@ -70,47 +73,41 @@ from utils.compat import (
 
 
 # ============================================================================
-# AAV Wild-type
+# Generic Landscape
 # ============================================================================
 
-AAV_WILDTYPE = "DEEEIRTTNPVATEQYGSYSTNLQQGNR"
-AAV_LENGTH = 28
-
-
-# ============================================================================
-# AAV Landscape
-# ============================================================================
-
-class AAVLandscape(flexs.Landscape):
+class GenericLandscape(flexs.Landscape):
     """
-    AAV protein fitness landscape.
+    Generic protein fitness landscape.
 
-    Uses empirical fitness data from AAV combinatorial library.
+    Works with any dataset that has a data.csv file with 'seq' and 'fitness' columns.
+    Auto-detects sequence length and alphabet from the data. Uses the highest-fitness
+    sequence as the wildtype fallback.
     """
 
     def __init__(
         self,
+        dataset: str,
         data_dir: str = "/home/xux/Desktop/AlphaVariant/Benchmark/data",
-        level: str = "med",
         normalize: bool = False
     ):
         """
-        Initialize AAV landscape.
+        Initialize generic landscape.
 
         Args:
+            dataset: Name of the dataset (subdirectory under data_dir)
             data_dir: Base directory for data files
-            level: Difficulty level ('med' or 'hard')
             normalize: Whether to normalize fitness values to [0, 1]
         """
-        super().__init__(name=f"AAV_{level}")
+        super().__init__(name=dataset)
 
         # Load data
-        data_path = os.path.join(data_dir, f"AAV_{level}", "data.csv")
+        data_path = os.path.join(data_dir, dataset, "data.csv")
         if not os.path.exists(data_path):
-            raise FileNotFoundError(f"AAV data not found at {data_path}")
+            raise FileNotFoundError(f"Dataset not found at {data_path}")
 
         self.data = pd.read_csv(data_path)
-        self.level = level
+        self.dataset = dataset
 
         # Build sequence -> fitness lookup using full sequence
         self.sequences = self.data['seq'].tolist()
@@ -119,16 +116,16 @@ class AAVLandscape(flexs.Landscape):
         if normalize:
             self.fitness = (self.fitness_raw - np.min(self.fitness_raw)) / (np.max(self.fitness_raw) - np.min(self.fitness_raw))
         else:
-            # AAV data is already normalized to [0, 1]
             self.fitness = self.fitness_raw
 
         self.seq_to_idx = {seq: i for i, seq in enumerate(self.sequences)}
         self.seq_to_fitness = {seq: fit for seq, fit in zip(self.sequences, self.fitness)}
 
-        # Wild-type sequence
-        self.wildtype = AAV_WILDTYPE
+        # Wild-type fallback: sequence with highest fitness
+        best_idx = int(np.argmax(self.fitness))
+        self.wildtype = self.sequences[best_idx]
 
-        # Determine alphabet (unique characters at each position)
+        # Auto-detect sequence length from data
         self.seq_length = len(self.sequences[0])
         self._compute_alphabet()
 
@@ -166,7 +163,7 @@ class AAVLandscape(flexs.Landscape):
 
 def compute_metrics(
     results_df: pd.DataFrame,
-    landscape: AAVLandscape,
+    landscape: GenericLandscape,
     model: Optional[Any] = None,
     batch_size: int = 96
 ) -> MetricsResult:
@@ -253,8 +250,9 @@ def set_seed(seed: int) -> None:
 
 
 def run_single_experiment(
+    dataset: str,
     seed: int,
-    output_path: str = "results/AAV_med_AdaLead/",
+    output_path: str,
     verbose: int = 2,
     run_id: Optional[int] = None,
     compute_metrics_flag: bool = True,
@@ -265,9 +263,10 @@ def run_single_experiment(
     n_init_samples: int = 96  # Random initial samples (matching ALDE)
 ) -> Dict[str, Any]:
     """
-    Run a single AdaLead optimization experiment on AAV_med dataset.
+    Run a single AdaLead optimization experiment on a generic dataset.
 
     Args:
+        dataset: Name of the dataset (subdirectory under data_dir)
         seed: Random seed for reproducibility
         output_path: Base path for saving results
         verbose: Verbosity level
@@ -290,7 +289,7 @@ def run_single_experiment(
     total_samples = n_init_samples + rounds * sequences_batch_size
 
     print(f"\n{'='*60}")
-    print(f"Starting AdaLead optimization on AAV_med")
+    print(f"Starting AdaLead optimization on {dataset}")
     print(f"  Seed: {seed}")
     print(f"  Model: CNN Ensemble")
     print(f"  Batch size: {sequences_batch_size}")
@@ -304,7 +303,7 @@ def run_single_experiment(
     set_seed(seed)
 
     # Load landscape
-    landscape = AAVLandscape(data_dir=data_dir, level="med", normalize=False)
+    landscape = GenericLandscape(dataset=dataset, data_dir=data_dir, normalize=False)
 
     # Get landscape info
     all_sequences = landscape.get_all_sequences()
@@ -312,13 +311,13 @@ def run_single_experiment(
     seq_length = landscape.seq_length
 
     print(f"Landscape: {len(all_sequences)} sequences")
-    print(f"Wild-type: {landscape.wildtype}")
+    print(f"Wild-type (best fitness): {landscape.wildtype}")
     print(f"Alphabet: {alphabet} (length {len(alphabet)})")
     print(f"Sequence length: {seq_length}")
     print(f"Fitness range: [{np.min(landscape.fitness):.4f}, {np.max(landscape.fitness):.4f}]")
 
     # Create output directory
-    subdir = os.path.join(output_path, "AAV_med", "")
+    subdir = os.path.join(output_path, dataset, "")
     os.makedirs(subdir, exist_ok=True)
 
     # Create CNN Ensemble model
@@ -340,13 +339,23 @@ def run_single_experiment(
     # =========================================================================
     print(f"\nRound 0: Percentile-based initialization ({n_init_samples} samples)")
 
-    # Sample from 40th-60th percentile (medium fitness) - matching LatProtRL
+    # Sample from 40th-60th percentile (medium fitness)
     all_fitness = landscape.get_all_fitness()
     threshold_low = np.percentile(all_fitness, 40)
     threshold_high = np.percentile(all_fitness, 60)
     medium_mask = (all_fitness >= threshold_low) & (all_fitness <= threshold_high)
     medium_indices = np.where(medium_mask)[0]
-    init_indices = np.random.choice(medium_indices, size=n_init_samples, replace=False)
+
+    # If not enough sequences in the medium range, broaden the range
+    if len(medium_indices) < n_init_samples:
+        print(f"  Warning: Only {len(medium_indices)} sequences in 40-60th percentile, "
+              f"broadening to 20-80th percentile")
+        threshold_low = np.percentile(all_fitness, 20)
+        threshold_high = np.percentile(all_fitness, 80)
+        medium_mask = (all_fitness >= threshold_low) & (all_fitness <= threshold_high)
+        medium_indices = np.where(medium_mask)[0]
+
+    init_indices = np.random.choice(medium_indices, size=min(n_init_samples, len(medium_indices)), replace=False)
 
     # Get initial sequences and their true fitness
     init_sequences = [all_sequences[i] for i in init_indices]
@@ -491,6 +500,7 @@ def run_single_experiment(
     result = {
         'seed': seed,
         'run_id': run_id,
+        'dataset': dataset,
         'result_path': results_path,
         'runtime_seconds': runtime,
         'n_queries': len(results_df),
@@ -559,7 +569,8 @@ def load_seeds_from_file(filepath: str, num_seeds: int) -> List[int]:
 
 def save_aggregated_results(
     results: List[Dict[str, Any]],
-    output_path: str
+    output_path: str,
+    dataset: str
 ) -> None:
     """Save aggregated results across all runs."""
 
@@ -626,17 +637,18 @@ def save_aggregated_results(
     summary_df = pd.DataFrame(summary_data)
 
     # Save to CSV
-    summary_path = os.path.join(output_path, 'AAV_med', 'aggregated_metrics.csv')
+    summary_path = os.path.join(output_path, dataset, 'aggregated_metrics.csv')
     summary_df.to_csv(summary_path, index=False)
     print(f"\nAggregated metrics saved to: {summary_path}")
 
     # Save complete aggregated results to JSON
-    aggregated_json_path = os.path.join(output_path, 'AAV_med', 'aggregated_results.json')
+    aggregated_json_path = os.path.join(output_path, dataset, 'aggregated_results.json')
     with open(aggregated_json_path, 'w') as f:
         json.dump({
             'aggregated_metrics': aggregated,
             'n_runs': len(results),
             'seeds': [r['seed'] for r in results],
+            'dataset': dataset,
             'config': results[0].get('config', {}) if results else {}
         }, f, indent=2, default=str)
     print(f"Aggregated results saved to: {aggregated_json_path}")
@@ -657,25 +669,33 @@ def save_aggregated_results(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run AdaLead optimization on AAV_med with CNN Ensemble",
+        description="Run AdaLead optimization on any dataset with CNN Ensemble",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single run with default seed
-  python run_AAV_med.py
+  # Single run on AAV_med with default seed
+  python run_generic.py --dataset AAV_med
 
   # Single run with specific seed
-  python run_AAV_med.py --seed 42
+  python run_generic.py --dataset GFP_med --seed 42
 
   # Multiple runs for randomness evaluation
-  python run_AAV_med.py --seeds 42 123 456 789 1000
+  python run_generic.py --dataset GB1 --seeds 42 123 456 789 1000
 
   # Load seeds from file
-  python run_AAV_med.py --seed_file ../rand_seeds.txt --num_seeds 5
+  python run_generic.py --dataset AAV_hard --seed_file ../rand_seeds.txt --num_seeds 5
 
   # Skip metrics computation
-  python run_AAV_med.py --seed 42 --skip_metrics
+  python run_generic.py --dataset AAV_med --seed 42 --skip_metrics
         """
+    )
+
+    # Dataset (required)
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        help="Name of the dataset (subdirectory under data_dir, e.g. AAV_med, GB1, GFP_med)"
     )
 
     # Seed configuration
@@ -735,8 +755,8 @@ Examples:
     parser.add_argument(
         "--output_path",
         type=str,
-        default="results/AAV_med_AdaLead/",
-        help="Output directory for results"
+        default=None,
+        help="Output directory for results (default: results/<dataset>_AdaLead/)"
     )
     parser.add_argument(
         "--verbose",
@@ -763,6 +783,10 @@ Examples:
     # Suppress TensorFlow logging
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
+    # Set default output path based on dataset name
+    if args.output_path is None:
+        args.output_path = f"results/{args.dataset}_AdaLead/"
+
     # Determine which seeds to use
     if args.seeds is not None:
         seeds = args.seeds
@@ -776,7 +800,7 @@ Examples:
         seeds = [42]
 
     total_samples = args.init_samples + args.rounds * args.batch_size
-    print(f"\nRunning AdaLead on AAV_med with {len(seeds)} seed(s): {seeds}")
+    print(f"\nRunning AdaLead on {args.dataset} with {len(seeds)} seed(s): {seeds}")
     print(f"Output path: {args.output_path}")
     print(f"Data directory: {args.data_dir}")
     print(f"Initial samples: {args.init_samples}")
@@ -791,6 +815,7 @@ Examples:
     for i, seed in enumerate(seeds):
         print(f"\n[{i+1}/{len(seeds)}] Running experiment with seed={seed}")
         result = run_single_experiment(
+            dataset=args.dataset,
             seed=seed,
             output_path=args.output_path,
             verbose=args.verbose,
@@ -806,12 +831,13 @@ Examples:
 
     # Aggregate results if multiple runs
     if len(results) > 1 and not args.skip_metrics:
-        save_aggregated_results(results, args.output_path)
+        save_aggregated_results(results, args.output_path, args.dataset)
 
     # Final summary
     print(f"\n{'='*60}")
     print("Experiment Complete")
     print(f"{'='*60}")
+    print(f"Dataset: {args.dataset}")
     print(f"Total runs: {len(results)}")
     print(f"Configuration:")
     print(f"  - Explorer: AdaLead")

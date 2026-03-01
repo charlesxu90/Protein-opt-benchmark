@@ -30,6 +30,8 @@ create_links "$SCRIPT_BASE/delta_cs/BioSeq-GFN-AL" "$REPO_BASE/delta_cs/BioSeq-G
 create_links "$SCRIPT_BASE/EvoPlay" "$REPO_BASE/EvoPlay"
 create_links "$SCRIPT_BASE/FLEXS" "$REPO_BASE/FLEXS"
 create_links "$SCRIPT_BASE/LatProtRL" "$REPO_BASE/LatProtRL"
+create_links "$SCRIPT_BASE/Random" "$REPO_BASE/Random"
+create_links "$SCRIPT_BASE/GreedyWalk" "$REPO_BASE/GreedyWalk"
 
 # Handle AiCE nested scripts/ directory
 mkdir -p "$REPO_BASE/AiCE/scripts"

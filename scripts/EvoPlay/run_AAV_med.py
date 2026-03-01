@@ -914,8 +914,20 @@ def run_single_experiment(
     subdir = os.path.join(output_path, protein, "onehot", "")
     os.makedirs(subdir, exist_ok=True)
 
-    # Run clustering for initial sampling
-    Index = run_clustering(features, n_clusters)
+    # Filter to medium-fitness sequences (40th-60th percentile) to match LatProtRL setup
+    threshold_low = np.percentile(fitness_normalized, 40)
+    threshold_high = np.percentile(fitness_normalized, 60)
+    candidate_mask = (fitness_normalized >= threshold_low) & (fitness_normalized <= threshold_high)
+    candidate_indices = np.where(candidate_mask)[0]
+
+    print(f"  Filtering to 40th-60th percentile: {len(candidate_indices)} candidates")
+    print(f"  Fitness range: [{threshold_low:.4f}, {threshold_high:.4f}]")
+
+    # Get features for candidates only
+    candidate_features = features[candidate_indices]
+
+    # Run K-means clustering on candidate features (hybrid approach)
+    Index = run_clustering(candidate_features, n_clusters)
     Index = shuffle_index(Index)
     Prob = np.ones([n_clusters]) / n_clusters
 
@@ -932,9 +944,12 @@ def run_single_experiment(
             Prob = Prob / np.sum(Prob)
             cluster_id = np.random.choice(np.arange(0, n_clusters), p=Prob)
 
-        Fit_list.append(fitness_normalized[Index[cluster_id][0]])
-        SEQ_list.append(sequences[Index[cluster_id][0]])
-        SEQ_index[cluster_id].append(Index[cluster_id][0])
+        local_idx = Index[cluster_id][0]
+        global_idx = candidate_indices[local_idx]  # Map back to global index
+
+        Fit_list.append(fitness_normalized[global_idx])
+        SEQ_list.append(sequences[global_idx])
+        SEQ_index[cluster_id].append(global_idx)
         Index[cluster_id] = np.delete(Index[cluster_id], [0])
         num += 1
 
@@ -947,6 +962,17 @@ def run_single_experiment(
     combo_to_fitness_first_round = dict(zip(SEQ_list, Fit_list))
     first_round_d = sorted(combo_to_fitness_first_round.items(), key=lambda x: x[1], reverse=True)
     start_pool = [k for k, v in first_round_d]
+
+    # Safety check: exclude wild-type from start_pool (WT has max fitness in AAV)
+    wildtype = get_wildtype_sequence(protein)
+    if wildtype and wildtype in start_pool:
+        start_pool.remove(wildtype)
+        print(f"  Warning: Wild-type found in initial samples, removed from start_pool")
+
+    if not start_pool:
+        raise ValueError("No valid starting sequences after excluding wild-type")
+
+    print(f"  Starting sequence: {start_pool[0]} (fitness: {combo_to_fitness_first_round.get(start_pool[0], 'N/A'):.4f})")
 
     # Get first round indices
     first_round_index = []
