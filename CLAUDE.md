@@ -87,6 +87,12 @@ Standard benchmark budget: 96 sequences/round × 5 rounds = 480 queries.
 3. Run `./scripts/add_script_link.sh` to create symlink
 4. Run from method dir: `cd <method> && python run_<dataset>.py --seed 42`
 
+## Asana Project
+
+- **Workspace:** kaust.edu.sa (GID: `944030100265405`)
+- **Project:** 0.AlphaVariant-benchmark (GID: `1213479076753155`)
+- **Sections:** Backlog (`1213479076753156`), Todo (`1213479076753158`), Done (`1213479076753159`), Problem (`1213479076753160`)
+
 ## Key Constants
 
 - `rand_seeds.txt`: 500 pre-generated seeds for reproducibility
