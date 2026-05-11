@@ -1,0 +1,1 @@
+/home/xux/Desktop/AlphaVariant/Benchmark/scripts/FLEXS/run_GB1.py

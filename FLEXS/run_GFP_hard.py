@@ -1,0 +1,1 @@
+/home/xux/Desktop/AlphaVariant/Benchmark/scripts/FLEXS/run_GFP_hard.py

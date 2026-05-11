@@ -1,3 +1,9 @@
 [submodule "EVOLVEpro"]
 	path = EVOLVEpro
 	url = https://github.com/mat10d/EVOLVEpro
+[submodule "ftMLDE"]
+	path = ftMLDE
+	url = https://github.com/fhalab/MLDE
+[submodule "MULTIevolve"]
+	path = MULTIevolve
+	url = https://github.com/ArcInstitute/MULTI-evolve
