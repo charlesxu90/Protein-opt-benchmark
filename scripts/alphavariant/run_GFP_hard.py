@@ -1402,7 +1402,21 @@ Examples:
     parser.add_argument("--finetune_lr", type=float, default=1e-4,
                        help="Learning rate for prior finetuning (default: 1e-4)")
 
+    parser.add_argument(
+        "--ablation", type=str, default="none",
+        choices=["none", "no-gpt", "no-space", "static-reward", "no-rl"],
+        help="Component-removal flag (only 'none' is supported on this dataset; "
+             "GB1 has full ablation support)",
+    )
+
+    if False:
+        pass
     args = parser.parse_args()
+    if getattr(args, 'ablation', 'none') != 'none':
+        raise NotImplementedError(
+            f"--ablation={args.ablation} is currently only implemented for run_GB1.py. "
+            "Extend the per-dataset trainer to support ablation seams; see run_GB1.py for the pattern."
+        )
     warnings.filterwarnings("ignore")
 
     # Determine seeds

@@ -72,6 +72,16 @@ from utils.compat import (
     normalized_fitness_topk,
     max_fitness,
     simple_regret,
+    spearman_correlation,
+    miscalibration_area,
+    expected_calibration_error,
+)
+# epistatic_correlation and recall_high_order_mutants are not in compat;
+# pull them from utils.metrics directly. The script aliases the former name
+# `epistatic_score_correlation` for backwards compat with original code.
+from utils.metrics import (
+    epistatic_score_correlation,
+    recall_high_order_mutants_from_seqs as recall_high_order_mutants,
 )
 
 # ============================================================================

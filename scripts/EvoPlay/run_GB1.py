@@ -1037,8 +1037,8 @@ def run_single_experiment(
             bd = batch_diversity(checkpoint_seqs)
 
             # Functional metrics
-            nf_top128 = normalized_fitness_topk(checkpoint_fitness, k=128, global_min=global_min, global_max=global_max)
-            nf_top256 = normalized_fitness_topk(checkpoint_fitness, k=256, global_min=global_min, global_max=global_max)
+            nf_top128 = normalized_fitness_topk(checkpoint_fitness, k=128, min_fitness=global_min, max_fitness=global_max)
+            nf_top256 = normalized_fitness_topk(checkpoint_fitness, k=256, min_fitness=global_min, max_fitness=global_max)
             max_fit = float(np.max(checkpoint_fitness))
 
             # Train GP model on checkpoint data for model quality metrics

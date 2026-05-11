@@ -93,6 +93,52 @@ ASSAYS = {
         "description": "IGP synthase (S. cerevisiae), 220aa, histidine biosynthesis",
         "seq_len": 220,
     },
+    # ---------------------------------------------------------------------
+    # Phase 1.2 additions: broaden coverage for refined-plan Tasks 1 + 2
+    # All names follow the ProteinGym v1.3 substitutions filename convention
+    # (<UNIPROT>_<Author>_<Year>). Verify exact match with `--list` after
+    # download if you encounter "File not found in zip".
+    # ---------------------------------------------------------------------
+    "PABP_YEAST": {
+        "filename": "PABP_YEAST_Melamed_2013",
+        "description": "Poly(A)-binding protein (S. cerevisiae), RNA-binding fitness",
+        "seq_len": 75,
+    },
+    "HSP82_YEAST": {
+        "filename": "HSP82_YEAST_Mishra_2016",
+        "description": "Hsp90 chaperone (S. cerevisiae), competitive growth",
+        "seq_len": 220,
+    },
+    "POLG_HCVJF": {
+        "filename": "POLG_HCVJF_Qi_2014",
+        "description": "HCV NS5A (Hepatitis C virus), viral fitness",
+        "seq_len": 466,
+    },
+    "DLG4_HUMAN": {
+        "filename": "DLG4_HUMAN_Faure_2021",
+        "description": "PSD95 PDZ3 domain (human), peptide binding",
+        "seq_len": 84,
+    },
+    "TPK1_HUMAN": {
+        "filename": "TPK1_HUMAN_Weile_2017",
+        "description": "Thiamine pyrophosphokinase (human), complementation",
+        "seq_len": 243,
+    },
+    "UBE4B_MOUSE": {
+        "filename": "UBE4B_MOUSE_Starita_2013",
+        "description": "U-box E3 ubiquitin ligase (mouse), in vitro activity",
+        "seq_len": 102,
+    },
+    "Q2N0S5_9HIV1": {
+        "filename": "Q2N0S5_9HIV1_Haddox_2018",
+        "description": "HIV-1 Env (BG505), viral infectivity",
+        "seq_len": 836,
+    },
+    "SPG1_STRSG_Wu": {
+        "filename": "SPG1_STRSG_Wu_2016",
+        "description": "GB1 (4-site combinatorial, alternative to default GB1)",
+        "seq_len": 56,
+    },
 }
 
 

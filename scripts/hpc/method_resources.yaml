@@ -1,0 +1,115 @@
+# Per-method HPC resource defaults
+#
+# Used by scripts/hpc/launch.py to fill in #SBATCH directives, and by
+# scripts/profile_methods.py to pick the right per-method python interpreter.
+#
+# All times use SLURM HH:MM:SS format. Override per call with --time / --gpus.
+#
+# Conventions:
+#   gpus: 0 means CPU-only. Tested values: 0, 1.
+#   time_per_seed: walltime per single seed run (one run_<dataset>.py invocation).
+#   mem_gb: per-task memory request.
+#   conda_env: path to the env. Either:
+#     - relative to BENCHMARK_ROOT (e.g. "ALDE/env")  [default convention]
+#     - absolute (e.g. "/home/xux/miniforge3/envs/alphavariant-env")
+#     - "~/..." paths are expanded.
+#   If the configured env doesn't exist, the launcher falls back to
+#   <method>/env if that exists; otherwise to the host python (with a warning).
+#   run_subdir: optional path *within* <method>/ where the actual scripts and
+#     their `lib/`, `src/`, etc. live. Used as both cwd and PYTHONPATH prefix.
+#     Example: delta_cs has its run script at delta_cs/BioSeq-GFN-AL/run_GB1.py
+#     and imports `from lib.X`, where `lib/` is `delta_cs/BioSeq-GFN-AL/lib/`.
+
+defaults:
+  gpus: 1
+  cpus_per_task: 4
+  mem_gb: 32
+  time_per_seed: "04:00:00"
+  conda_env: ""  # set per method below
+
+methods:
+  ALDE:
+    gpus: 1
+    cpus_per_task: 4
+    mem_gb: 32
+    time_per_seed: "04:00:00"
+    conda_env: ALDE/env
+
+  EvoPlay:
+    gpus: 1
+    cpus_per_task: 4
+    mem_gb: 32
+    time_per_seed: "06:00:00"
+    conda_env: EvoPlay/env
+
+  LatProtRL:
+    gpus: 1
+    cpus_per_task: 8
+    mem_gb: 48
+    time_per_seed: "08:00:00"
+    conda_env: LatProtRL/env/latprotrl_env
+
+  FLEXS:
+    gpus: 1
+    cpus_per_task: 4
+    mem_gb: 24
+    time_per_seed: "04:00:00"
+    conda_env: FLEXS/env
+
+  AiCE:
+    gpus: 1
+    cpus_per_task: 4
+    mem_gb: 32
+    time_per_seed: "06:00:00"
+    conda_env: AiCE/env
+
+  delta_cs:
+    gpus: 1
+    cpus_per_task: 4
+    mem_gb: 32
+    time_per_seed: "04:00:00"
+    conda_env: delta_cs/env/delta_cs_env
+    run_subdir: BioSeq-GFN-AL
+
+  alphavariant:
+    gpus: 1
+    cpus_per_task: 8
+    mem_gb: 64
+    time_per_seed: "12:00:00"
+    # Lives outside the benchmark tree; absolute path is intentional.
+    conda_env: /home/xux/miniforge3/envs/alphavariant-env
+
+  Random:
+    gpus: 0
+    cpus_per_task: 1
+    mem_gb: 8
+    time_per_seed: "00:30:00"
+    conda_env: ALDE/env  # pure-python; reuse ALDE for utils
+
+  GreedyWalk:
+    gpus: 0
+    cpus_per_task: 2
+    mem_gb: 8
+    time_per_seed: "01:00:00"
+    conda_env: ALDE/env
+
+  EVOLVEpro:
+    gpus: 1
+    cpus_per_task: 4
+    mem_gb: 32
+    time_per_seed: "06:00:00"
+    conda_env: EVOLVEpro/env
+
+  ftMLDE:
+    gpus: 0
+    cpus_per_task: 4
+    mem_gb: 16
+    time_per_seed: "02:00:00"
+    conda_env: ftMLDE/env
+
+  MULTIevolve:
+    gpus: 1
+    cpus_per_task: 4
+    mem_gb: 32
+    time_per_seed: "06:00:00"
+    conda_env: MULTIevolve/env

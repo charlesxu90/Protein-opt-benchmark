@@ -185,17 +185,26 @@ def normalized_fitness_topk(
     k: int = 128,
     min_fitness: Optional[float] = None,
     max_fitness: Optional[float] = None,
-    aggregation: str = 'median'
+    aggregation: str = 'median',
+    # Aliases for backwards-compat with various method scripts:
+    global_min: Optional[float] = None,
+    global_max: Optional[float] = None,
+    fitness_min: Optional[float] = None,
+    fitness_max: Optional[float] = None,
 ) -> float:
     """
     Normalized Fitness (Median Top-K).
 
-    Compatible with ALDE's interface.
+    Compatible with ALDE's interface. Accepts `min_fitness`/`max_fitness`,
+    `global_min`/`global_max`, or `fitness_min`/`fitness_max` for the
+    normalization range — first non-None of each pair wins.
     """
+    lo = next((v for v in (min_fitness, global_min, fitness_min)
+               if v is not None), None)
+    hi = next((v for v in (max_fitness, global_max, fitness_max)
+               if v is not None), None)
     return normalized_fitness_median_topk(
-        fitness_values, k=k,
-        fitness_min=min_fitness,
-        fitness_max=max_fitness
+        fitness_values, k=k, fitness_min=lo, fitness_max=hi,
     )
 
 
@@ -227,7 +236,11 @@ def global_max_hit_count(
     Global Max Hit Count: Number of runs that found the global maximum.
 
     Compatible with ALDE's interface (returns tuple of count, rate).
+    Tolerates a scalar `run_max_fitness` (treated as a single-run input) since
+    several method scripts call this per-run.
     """
+    if isinstance(run_max_fitness, (int, float, np.floating, np.integer)):
+        run_max_fitness = [float(run_max_fitness)]
     threshold = global_max * (1 - tolerance)
     hit_count = sum(1 for max_fit in run_max_fitness if max_fit >= threshold)
     hit_rate = hit_count / len(run_max_fitness) if run_max_fitness else 0.0

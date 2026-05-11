@@ -66,6 +66,12 @@ from utils.compat import (
     max_fitness,
     simple_regret,
     spearman_correlation,
+    miscalibration_area,
+    expected_calibration_error,
+)
+from utils.metrics import (
+    epistatic_score_correlation,
+    recall_high_order_mutants_from_seqs as recall_high_order_mutants,
 )
 
 

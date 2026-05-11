@@ -51,7 +51,7 @@ DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
 def load_landscape_data(
     dataset: str,
     data_dir: Optional[Union[str, Path]] = None,
-    sequence_col: str = 'sequence',
+    sequence_col: Optional[str] = None,
     fitness_col: str = 'fitness'
 ) -> Tuple[List[str], np.ndarray]:
     """

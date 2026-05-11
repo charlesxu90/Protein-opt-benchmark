@@ -1,0 +1,4 @@
+method,seed,status,wall_seconds,exit_code,gpu_id
+Random,100,OK,3.4,0,None
+Random,383,OK,3.5,0,None
+Random,621,OK,3.5,0,None

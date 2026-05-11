@@ -782,7 +782,14 @@ def run_single_experiment(
     }
 
     # Compute metrics
-    if compute_metrics and discovered_seqs:
+    # NOTE: discovered_seqs may be empty if the RL agent never added a
+    # sequence to env.discovered_sequences (happens when no proposal meets
+    # the discovery threshold). The replay buffer still holds the proposals,
+    # so we fall back to buffer content for metric computation rather than
+    # silently skipping.
+    final_seqs: List[str] = []
+    final_fitness = np.zeros(0)
+    if compute_metrics and (discovered_seqs or len(env.buffer.pool) > 0):
         print("\nComputing evaluation metrics...")
 
         # Get final buffer proposals
@@ -887,9 +894,12 @@ def run_single_experiment(
             json.dump(result, f, indent=2, default=str)
         print(f"\nMetrics saved to: {metrics_path}")
 
-    # Save final sequences
-    np.save(os.path.join(save_dir, 'final_sequences.npy'), final_seqs)
-    np.save(os.path.join(save_dir, 'final_fitness.npy'), final_fitness)
+    # Save final sequences (defensive: only if metrics block ran)
+    if final_seqs:
+        np.save(os.path.join(save_dir, 'final_sequences.npy'), final_seqs)
+        np.save(os.path.join(save_dir, 'final_fitness.npy'), final_fitness)
+    else:
+        print("  (skipping final_sequences.npy save — buffer was empty)")
 
     if use_wandb and WANDB_AVAILABLE:
         wandb.finish()

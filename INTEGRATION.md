@@ -2,6 +2,52 @@
 
 This guide explains how to update each method's `run_GB1.py` to use the new unified benchmark utilities located in `Benchmark/utils/`.
 
+## New modules (2026-05)
+
+The refined benchmark plan added three modules under `utils/`:
+
+- `utils.multi_objective` — `hypervolume`, `pareto_front`, `pareto_front_coverage` for Task 3 multi-objective evaluation.
+- `utils.proteingym_oracle` — `load_oracle(name)`, `top_percent_threshold`, `mutation_order_distribution`, `hierarchical_split` for any prepared dataset.
+- `utils.sequence_plausibility` — `esm2_ppl`, `pll`, `perplexity` for ESM-2 plausibility scoring (lazy-imports torch/transformers).
+
+All three are also re-exported from `utils.__init__` (except plausibility, which stays lazy).
+
+## HPC integration
+
+Run scripts must accept `--seed` (single int) for the job-array launcher to drive them. `scripts/hpc/launch.py` invokes `<method>/run_<dataset>.py --seed $SEED [extra args]`. To add a new dataset:
+
+1. Drop the prepared CSV at `data/<name>/data.csv` (`seq, fitness` columns).
+2. Add per-dataset wrappers at `scripts/<method>/run_<name>.py` that delegate to `run_generic.py`.
+3. Run `scripts/add_script_link.sh` to refresh symlinks.
+4. (HPC) The launcher picks resource defaults from `scripts/hpc/method_resources.yaml`.
+
+## Per-method environments
+
+The launcher resolves the python interpreter per method from
+`scripts/hpc/method_resources.yaml`. Each entry's `conda_env:` accepts:
+  - a path relative to the benchmark root (e.g. `ALDE/env`)
+  - an absolute path (e.g. `/home/xux/miniforge3/envs/alphavariant-env`)
+  - a `~/...` path (expanded at resolution time)
+
+If the configured env is missing, the launcher falls back to `<method>/env`
+if that exists; otherwise to `sys.executable` with a warning. Use the snippet
+in `docs/reproducibility_appendix.md` §1 to verify every entry resolves on
+your host.
+
+## AlphaVariant ablations (Phase 2)
+
+Pass `--ablation {none|no-gpt|no-space|static-reward|no-rl}` to AlphaVariant run scripts to swap a single component:
+
+- `none` (default) — full pipeline.
+- `no-gpt` — replace VariantGPT prior with random single-site mutations.
+- `no-space` — disable dynamic space definition (search the full sequence space).
+- `static-reward` — replace iterative low-N reward with static zero-shot ESM-1v.
+- `no-rl` — replace RL acquisition with greedy top-k from the prior.
+
+The flag is forwarded through `scripts/hpc/launch.py --extra-args "--ablation no-gpt"`.
+
+
+
 ## Quick Start
 
 ### Option 1: Drop-in Replacement (Recommended)

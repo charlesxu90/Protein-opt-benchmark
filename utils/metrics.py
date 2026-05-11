@@ -531,6 +531,115 @@ def spearman_correlation(
     return float(correlation)
 
 
+def recall_high_order_mutants_from_seqs(
+    sequences: Sequence[str],
+    fitness_values: Sequence[float],
+    predicted_values: Sequence[float],
+    wildtype: str,
+    min_mutations: int = 2,
+    top_k: int = 100,
+) -> float:
+    """Sequence-aware recall of high-order mutants.
+
+    Sequence-aware variant of `recall_high_order_mutants`: identifies the
+    top-k true and top-k predicted variants among entries with
+    `>=min_mutations` differences from `wildtype`, returns intersection size
+    over true set.
+
+    Returns 0.0 if no qualifying entries exist or both ranking sets are empty.
+    """
+    fit_arr = np.asarray(fitness_values, dtype=float)
+    pred_arr = np.asarray(predicted_values, dtype=float)
+    high_order_mask = np.array([
+        sum(s != w for s, w in zip(seq, wildtype)) >= min_mutations
+        if len(seq) == len(wildtype) else False
+        for seq in sequences
+    ])
+    n_high = int(np.sum(high_order_mask))
+    if n_high == 0:
+        return 0.0
+    if n_high < top_k:
+        top_k = max(1, n_high // 2)
+    high_order_indices = np.where(high_order_mask)[0]
+    if top_k == 0 or len(high_order_indices) == 0:
+        return 0.0
+
+    true_vals = fit_arr[high_order_indices]
+    pred_vals = pred_arr[high_order_indices]
+    true_top = set(high_order_indices[np.argsort(true_vals)[-top_k:]])
+    pred_top = set(high_order_indices[np.argsort(pred_vals)[-top_k:]])
+    if not true_top:
+        return 0.0
+    return len(true_top & pred_top) / len(true_top)
+
+
+def epistatic_score_correlation(
+    sequences: Sequence[str],
+    fitness_values: Sequence[float],
+    predicted_values: Sequence[float],
+    wildtype: str,
+) -> float:
+    """Sequence-aware epistatic score correlation.
+
+    Computes single-mutant effects from (sequence, fitness) pairs, then derives
+    epistasis = observed_fitness - additive_prediction for every multi-mutant
+    where all single-mutant effects are known. Returns Spearman ρ between the
+    observed and predicted epistasis vectors.
+
+    This is the 4-arg variant used by alphavariant and AiCE; for cases where
+    the caller already has epistasis vectors, use `epistatic_correlation`.
+
+    Returns 0.0 if fewer than 5 multi-mutants have all single-mutant effects
+    available, or if no wild-type / single-mutant data was provided.
+    """
+    fit_arr = np.asarray(fitness_values, dtype=float)
+    pred_arr = np.asarray(predicted_values, dtype=float)
+    if len(sequences) < 10:
+        return 0.0
+
+    single_true: dict = {}
+    single_pred: dict = {}
+    wt_fitness = None
+    wt_pred = None
+
+    for seq, fit, pred in zip(sequences, fit_arr, pred_arr):
+        if len(seq) != len(wildtype):
+            continue
+        n_mut = sum(s != w for s, w in zip(seq, wildtype))
+        if n_mut == 0:
+            wt_fitness = float(fit)
+            wt_pred = float(pred)
+        elif n_mut == 1:
+            for i, (wt_aa, mut_aa) in enumerate(zip(wildtype, seq)):
+                if wt_aa != mut_aa:
+                    single_true[(i, mut_aa)] = float(fit)
+                    single_pred[(i, mut_aa)] = float(pred)
+                    break
+
+    if wt_fitness is None or not single_true:
+        return 0.0
+
+    epi_true: List[float] = []
+    epi_pred: List[float] = []
+    for seq, fit, pred in zip(sequences, fit_arr, pred_arr):
+        if len(seq) != len(wildtype):
+            continue
+        muts = [(i, mut) for i, (wt_aa, mut) in enumerate(zip(wildtype, seq))
+                if wt_aa != mut]
+        if len(muts) < 2:
+            continue
+        if not all(m in single_true for m in muts):
+            continue
+        add_true = wt_fitness + sum(single_true[m] - wt_fitness for m in muts)
+        add_pred = wt_pred + sum(single_pred[m] - wt_pred for m in muts)
+        epi_true.append(float(fit) - add_true)
+        epi_pred.append(float(pred) - add_pred)
+
+    if len(epi_true) < 5:
+        return 0.0
+    return spearman_correlation(np.asarray(epi_true), np.asarray(epi_pred))
+
+
 def epistatic_correlation(
     predicted_epistasis: Sequence[float],
     observed_epistasis: Sequence[float]

@@ -46,10 +46,27 @@ except ImportError:
     HAS_PANDAS = False
 
 # All methods and datasets in the benchmark
-ALL_METHODS = ['ALDE', 'EvoPlay', 'LatProtRL', 'FLEXS', 'AiCE', 'delta_cs', 'AlphaVariant', 'Random', 'GreedyWalk']
-ALL_DATASETS = ['GB1', 'AAV_med', 'AAV_hard', 'GFP_med', 'GFP_hard']
+ALL_METHODS = [
+    # Established
+    'ALDE', 'EvoPlay', 'LatProtRL', 'FLEXS', 'AiCE', 'delta_cs',
+    'AlphaVariant', 'Random', 'GreedyWalk',
+    # Phase 2.1 baselines (scaffolding; not yet runnable)
+    'EVOLVEpro', 'ftMLDE', 'MULTIevolve',
+]
+ALL_DATASETS = [
+    # Original
+    'GB1', 'AAV_med', 'AAV_hard', 'GFP_med', 'GFP_hard',
+    # Phase 1.2 additions (CombinGym)
+    'CR9114', 'CreiLOV', 'eqFP611_blue', 'eqFP611_red',
+    # Phase 1.2 additions (ProteinGym; populated by prepare_proteingym.py)
+    'BLAT_ECOLX', 'CALM1_HUMAN', 'GFP_AEQVI', 'DYR_ECOLI',
+    'AMIE_PSEAE', 'KKA2_KLEPN', 'MK01_HUMAN', 'HIS7_YEAST',
+    'PABP_YEAST', 'HSP82_YEAST', 'POLG_HCVJF', 'DLG4_HUMAN',
+    'TPK1_HUMAN', 'UBE4B_MOUSE', 'Q2N0S5_9HIV1',
+]
 
-# Core metrics to include in the main comparison table
+# Core metrics to include in the main comparison table.
+# Aligned with refined_benchmark_plan.md Section 4.
 CORE_METRICS = [
     'max_fitness',
     'simple_regret',
@@ -58,8 +75,9 @@ CORE_METRICS = [
     'novelty',
     'batch_diversity',
     'spearman_correlation',
-    'auoc',
-    'hit_rate_value',
+    'auoc',                # Area Under Optimization Curve
+    'hit_rate_value',      # EVOLVEpro-style hit rate at last round
+    'global_max_hit_count', # CLADE / Wittmann global-max recovery
 ]
 
 
@@ -89,21 +107,46 @@ def find_result_files(base_dir: Path, method: str, dataset: str) -> List[Path]:
             if dataset.lower() in str(path).lower():
                 if path not in results:
                     results.append(path)
+        # alphavariant writes alphavariant/results/<DS>_AlphaVariant/seed_<S>/metrics.json
+        for path in method_dir.rglob('metrics.json'):
+            if dataset.lower() in str(path).lower() or (
+                path.parent.name.startswith('seed_')
+                and (path.parent.parent.name.lower().startswith(dataset.lower())
+                     or method.lower() in path.parent.parent.name.lower())
+            ):
+                if path not in results:
+                    results.append(path)
 
     return sorted(set(results))
 
 
 def load_metrics_from_files(files: List[Path]) -> List[Dict]:
-    """Load metrics from a list of JSON files."""
+    """Load metrics from a list of JSON files.
+
+    Handles three schema flavors:
+      - data["metrics"] is a dict (most methods)
+      - data["metrics"] is a list of per-round dicts (delta_cs); prefer
+        data["final_metrics"], otherwise take the last round
+      - top-level dict already has metric keys (legacy)
+    """
     metrics_list = []
     for fpath in files:
         try:
             with open(fpath) as f:
                 data = json.load(f)
-            if 'metrics' in data:
-                metrics_list.append(data['metrics'])
+            m = None
+            if isinstance(data.get('final_metrics'), dict):
+                m = data['final_metrics']
+            elif isinstance(data.get('metrics'), dict):
+                m = data['metrics']
+            elif isinstance(data.get('metrics'), list) and data['metrics']:
+                last = data['metrics'][-1]
+                if isinstance(last, dict):
+                    m = last
             elif 'max_fitness' in data:
-                metrics_list.append(data)
+                m = data
+            if m is not None:
+                metrics_list.append(m)
         except (json.JSONDecodeError, KeyError) as e:
             print(f"  Warning: Could not load {fpath}: {e}")
     return metrics_list
@@ -305,18 +348,39 @@ def generate_stat_tests(
     methods: List[str],
     metric: str = 'max_fitness',
     test: str = 'wilcoxon',
+    bonferroni: bool = False,
+    alpha: float = 0.05,
 ) -> str:
-    """Generate pairwise statistical test table for a single dataset and metric."""
+    """Generate pairwise statistical test table for a single dataset and metric.
+
+    When `bonferroni` is True, the significance threshold α is divided by the
+    number of pairwise comparisons (k(k-1)/2 unordered pairs). The corrected
+    threshold is annotated in the header so reviewers can verify it.
+    """
     lines = []
-    lines.append(f"\n#### Statistical tests: {metric} on {dataset} ({test})\n")
 
     active_methods = [m for m in methods if (m, dataset) in results
                       and metric in results[(m, dataset)]['aggregated']
                       and results[(m, dataset)]['n_runs'] >= 2]
 
     if len(active_methods) < 2:
+        lines.append(f"\n#### Statistical tests: {metric} on {dataset} ({test})\n")
         lines.append("Not enough methods with multiple runs for statistical tests.\n")
         return "\n".join(lines)
+
+    n_pairs = len(active_methods) * (len(active_methods) - 1) // 2
+    if bonferroni and n_pairs > 0:
+        alpha_corrected = alpha / n_pairs
+        header_line = (f"\n#### Statistical tests: {metric} on {dataset} "
+                       f"({test}, Bonferroni-corrected α={alpha_corrected:.5f} "
+                       f"for {n_pairs} pairs)\n")
+        # Adjust significance markers to use corrected threshold
+        levels = [(alpha_corrected / 5, "***"), (alpha_corrected, "**"),
+                  (alpha, "*")]
+    else:
+        header_line = f"\n#### Statistical tests: {metric} on {dataset} ({test})\n"
+        levels = [(0.001, "***"), (0.01, "**"), (0.05, "*")]
+    lines.append(header_line)
 
     # Header
     header = "| |" + " | ".join(active_methods) + " |"
@@ -334,7 +398,11 @@ def generate_stat_tests(
             raw_b = [m.get(metric, float('nan')) for m in results[(mb, dataset)]['raw']]
             try:
                 stat, pval = paired_comparison(raw_a, raw_b, test=test)
-                sig = "***" if pval < 0.001 else "**" if pval < 0.01 else "*" if pval < 0.05 else ""
+                sig = ""
+                for thresh, marker in levels:
+                    if pval < thresh:
+                        sig = marker
+                        break
                 cells.append(f"p={pval:.4f}{sig}")
             except Exception:
                 cells.append("N/A")
@@ -342,6 +410,48 @@ def generate_stat_tests(
 
     lines.append("")
     return "\n".join(lines)
+
+
+def collect_resource_usage(
+    base_dir: Path,
+    methods: List[str],
+    datasets: List[str],
+) -> Dict[Tuple[str, str], Dict[str, float]]:
+    """Aggregate resource.json files written by scripts/hpc/log_resource_use.py.
+
+    Returns a dict (method, dataset) -> {wall_hours_mean, wall_hours_total,
+    gpu_hours_total, n_runs_with_resource}.
+    """
+    out: Dict[Tuple[str, str], Dict[str, float]] = {}
+    for method in methods:
+        for dataset in datasets:
+            patterns = [
+                base_dir / method / "results" / dataset / "**" / "*resource*.json",
+                base_dir / "results" / method / dataset / "**" / "*resource*.json",
+            ]
+            wall_hours = []
+            gpu_hours = []
+            for pattern in patterns:
+                for path in Path(str(pattern).split("**")[0]).rglob("*resource*.json"):
+                    try:
+                        with open(path) as f:
+                            rec = json.load(f)
+                    except Exception:
+                        continue
+                    if "wall_hours" in rec:
+                        wall_hours.append(float(rec["wall_hours"]))
+                    # GPU hours: approximate as wall_hours * gpus_used (1 if gpu memory > 0)
+                    gh = (float(rec.get("wall_hours", 0.0))
+                          if rec.get("max_gpu_memory_mib", 0) > 0 else 0.0)
+                    gpu_hours.append(gh)
+            if wall_hours:
+                out[(method, dataset)] = {
+                    "wall_hours_mean": float(np.mean(wall_hours)),
+                    "wall_hours_total": float(np.sum(wall_hours)),
+                    "gpu_hours_total": float(np.sum(gpu_hours)),
+                    "n_runs_with_resource": len(wall_hours),
+                }
+    return out
 
 
 def main():
@@ -381,6 +491,18 @@ def main():
     parser.add_argument(
         "--stat_metric", type=str, default='max_fitness',
         help="Metric to use for statistical tests (default: max_fitness)",
+    )
+    parser.add_argument(
+        "--bonferroni", action="store_true",
+        help="Apply Bonferroni correction to significance thresholds",
+    )
+    parser.add_argument(
+        "--alpha", type=float, default=0.05,
+        help="Base significance level (default 0.05; divided by pair count if --bonferroni)",
+    )
+    parser.add_argument(
+        "--include_resources", action="store_true",
+        help="Include GPU-hour / wall-clock columns from resource.json files",
     )
 
     args = parser.parse_args()
@@ -438,13 +560,23 @@ def main():
                 has_data = any((m, dataset) in results for m in methods)
                 if has_data:
                     test_table = generate_stat_tests(
-                        results, dataset, methods, args.stat_metric, args.stat_test)
+                        results, dataset, methods, args.stat_metric, args.stat_test,
+                        bonferroni=args.bonferroni, alpha=args.alpha)
                     all_tables.append(test_table)
 
         content = "\n".join(all_tables)
         with open(output_path, 'w') as f:
             f.write(content)
         print(f"\nSaved {fmt} table to: {output_path}")
+
+    # Optional: collect GPU-hour / wall-clock from resource.json files
+    resource_table: Dict[Tuple[str, str], Dict[str, float]] = {}
+    if args.include_resources:
+        resource_table = collect_resource_usage(base_dir, methods, datasets)
+        if resource_table:
+            print(f"\nResource usage collected for {len(resource_table)} pairs.")
+        else:
+            print("\nNo resource.json files found; skipping GPU-hour columns.")
 
     # Also generate a combined CSV with all data if pandas available
     if HAS_PANDAS:
@@ -454,6 +586,11 @@ def main():
             for metric, stats in data['aggregated'].items():
                 row[f"{metric}_mean"] = stats['mean']
                 row[f"{metric}_std"] = stats['std']
+            res = resource_table.get((method, dataset))
+            if res:
+                row['wall_hours_mean'] = res['wall_hours_mean']
+                row['wall_hours_total'] = res['wall_hours_total']
+                row['gpu_hours_total'] = res['gpu_hours_total']
             rows.append(row)
 
         if rows:

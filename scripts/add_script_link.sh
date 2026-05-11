@@ -33,8 +33,20 @@ create_links "$SCRIPT_BASE/LatProtRL" "$REPO_BASE/LatProtRL"
 create_links "$SCRIPT_BASE/Random" "$REPO_BASE/Random"
 create_links "$SCRIPT_BASE/GreedyWalk" "$REPO_BASE/GreedyWalk"
 
+# Phase 2.1 baselines (scaffolding; see scripts/<method>/README_INTEGRATION.md)
+mkdir -p "$REPO_BASE/EVOLVEpro" "$REPO_BASE/ftMLDE" "$REPO_BASE/MULTIevolve"
+create_links "$SCRIPT_BASE/EVOLVEpro" "$REPO_BASE/EVOLVEpro"
+create_links "$SCRIPT_BASE/ftMLDE" "$REPO_BASE/ftMLDE"
+create_links "$SCRIPT_BASE/MULTIevolve" "$REPO_BASE/MULTIevolve"
+
 # Handle AiCE nested scripts/ directory
 mkdir -p "$REPO_BASE/AiCE/scripts"
 create_links "$SCRIPT_BASE/AiCE/scripts" "$REPO_BASE/AiCE/scripts"
+
+# delta_cs scripts live in delta_cs/BioSeq-GFN-AL/ — the launcher reads
+# `run_subdir: BioSeq-GFN-AL` from method_resources.yaml and finds them
+# there directly, so we don't mirror them at the top level (doing so breaks
+# Python's __file__-relative imports because the script computes
+# `os.path.dirname(__file__) + '/../..'` to find the benchmark utils).
 
 echo "All symbolic links created successfully!"

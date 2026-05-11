@@ -344,6 +344,7 @@ class IterativeGB1Trainer:
         finetune_prior: bool = False,
         n_finetune_epochs: int = 10,
         finetune_lr: float = 1e-4,
+        ablation: str = "none",
     ):
         """
         Initialize iterative trainer.
@@ -355,7 +356,21 @@ class IterativeGB1Trainer:
             finetune_prior: Whether to finetune prior on collected sequences before RL
             n_finetune_epochs: Number of epochs for prior finetuning (default: 10)
             finetune_lr: Learning rate for prior finetuning
+            ablation: Component-removal flag. One of:
+                'none'           -> full pipeline (default)
+                'no-gpt'         -> AV-NoGPT: replace GPT prior with random single-site
+                                   mutations around the best variant
+                'no-space'       -> AV-NoSpace: disable dynamic space definition
+                                   (no top-k cutoff, no clustering — uniform sampling)
+                'static-reward'  -> AV-StaticReward: freeze surrogate after round 0
+                'no-rl'          -> AV-NoRL: skip REINFORCE; sample from prior + greedy
+                                   top-k by surrogate score
         """
+        valid_ablations = {"none", "no-gpt", "no-space", "static-reward", "no-rl"}
+        if ablation not in valid_ablations:
+            raise ValueError(
+                f"Unknown ablation: {ablation!r}. Choose from {sorted(valid_ablations)}"
+            )
         self.model_config = model_config
         self.optim_config = optim_config
         self.template = template
@@ -375,6 +390,7 @@ class IterativeGB1Trainer:
         self.finetune_prior = finetune_prior
         self.n_finetune_epochs = n_finetune_epochs
         self.finetune_lr = finetune_lr
+        self.ablation = ablation
 
         self.sd = AASeqDictionary()
         set_random_seed(seed)
@@ -461,6 +477,49 @@ class IterativeGB1Trainer:
 
         indices = np.random.choice(len(available), size=n_samples, replace=False)
         return [available[i] for i in indices]
+
+    def _random_mutation_samples(self, n_samples: int, exclude: set = None) -> List[str]:
+        """Random single-site mutations around the best variants discovered so far.
+
+        Used by the AV-NoGPT ablation: replaces the GPT-generated proposals with
+        a simple "mutate the best variant at random positions" baseline.
+        Falls back to uniform random if no variants have been collected yet.
+        """
+        if exclude is None:
+            exclude = set()
+        AAS = "ACDEFGHIKLMNPQRSTVWY"
+        available_set = set(self.all_combos)
+
+        if not self.collected_combos:
+            return self._sample_random_combos(n_samples, exclude=exclude)
+
+        # Rank collected combos by fitness
+        order = np.argsort(-np.asarray(self.collected_fitness))
+        seeds = [self.collected_combos[i] for i in order[: max(1, n_samples // 4)]]
+
+        out: List[str] = []
+        attempts = 0
+        max_attempts = n_samples * 50
+        while len(out) < n_samples and attempts < max_attempts:
+            attempts += 1
+            base = seeds[np.random.randint(len(seeds))]
+            pos = np.random.randint(len(base))
+            new_aa = AAS[np.random.randint(len(AAS))]
+            if new_aa == base[pos]:
+                continue
+            mutant = base[:pos] + new_aa + base[pos + 1 :]
+            if mutant in exclude or mutant in out:
+                continue
+            if mutant not in available_set:
+                continue
+            out.append(mutant)
+        # Top up with uniform random if we couldn't find enough valid mutants
+        if len(out) < n_samples:
+            extras = self._sample_random_combos(
+                n_samples - len(out), exclude=exclude.union(out)
+            )
+            out.extend(extras)
+        return out
 
     def _cluster_init_sample(self, n_samples: int, exclude: set = None) -> List[str]:
         """
@@ -1216,7 +1275,11 @@ class IterativeGB1Trainer:
                 # Round 1: Initial sampling from full 4-site space
                 collected_set = set(self.collected_combos)
 
-                if self.sampling_strategy == 'cluster':
+                if self.ablation == "no-space":
+                    # AV-NoSpace: skip dynamic space (no clustering); uniform random
+                    logger.info("[ablation=no-space] Uniform random initialization...")
+                    new_combos = self._sample_random_combos(self.batch_size, exclude=collected_set)
+                elif self.sampling_strategy == 'cluster':
                     # CLADE-2 style: cluster-based initialization for diverse coverage
                     logger.info("Cluster-based initialization from full landscape...")
                     new_combos = self._cluster_init_sample(self.batch_size, exclude=collected_set)
@@ -1239,46 +1302,102 @@ class IterativeGB1Trainer:
                         n_epochs=self.n_finetune_epochs,
                     )
 
-                # Step 2: Train new surrogate on ALL collected data
-                logger.info(f"Step 2: Training surrogate on {len(self.collected_combos)} samples...")
-                self._train_surrogate()
+                # Step 2: Train new surrogate on ALL collected data.
+                # Ablation seam: AV-StaticReward freezes the surrogate after round 0.
+                if self.ablation == "static-reward":
+                    logger.info("[ablation=static-reward] Skipping surrogate retraining; "
+                                "reusing round-0 surrogate")
+                else:
+                    logger.info(f"Step 2: Training surrogate on {len(self.collected_combos)} samples...")
+                    self._train_surrogate()
 
-                # Step 3: Train GPT with RL using the new surrogate, collect generated sequences
-                logger.info(f"Step 3: Training GPT for {self.n_steps_per_round} steps (collecting variants)...")
-                generated_seqs, generated_fitness = self._train_gpt_on_surrogate(
-                    self.n_steps_per_round, round_idx=round_idx
-                )
-
+                # Step 3: Generate candidate sequences. Ablation seam: AV-NoGPT replaces
+                # the GPT prior + RL with random single-site mutations around the best
+                # variants. AV-NoRL skips the REINFORCE update and samples directly
+                # from the prior.
                 collected_set = set(self.collected_combos)
 
-                if self.sampling_strategy == 'cluster':
-                    # CLADE-2 style: top-k cutoff + clustering
-                    # For rounds before last: apply top-k cutoff
-                    # For last round: no cutoff
-                    apply_cutoff = not is_last_round
-
-                    logger.info(f"Cluster sampling from RL variants (cutoff={apply_cutoff})...")
-                    new_seqs, new_combos = self._cluster_sample(
-                        seqs=generated_seqs,
-                        predicted_fitness=generated_fitness,
-                        n_samples=self.batch_size,
-                        exclude_combos=collected_set,
-                        apply_cutoff=apply_cutoff,
+                if self.ablation == "no-gpt":
+                    logger.info("[ablation=no-gpt] Sampling random single-site mutations "
+                                "around best variants...")
+                    new_combos = self._random_mutation_samples(
+                        self.batch_size, exclude=collected_set,
                     )
-
-                elif self.sampling_strategy == 'active':
-                    # ALDE style: Thompson Sampling or UCB acquisition
-                    logger.info(f"Active sampling from RL variants ({self.acquisition})...")
-                    new_seqs, new_combos = self._active_sample(
-                        seqs=generated_seqs,
-                        n_samples=self.batch_size,
-                        exclude_combos=collected_set,
-                        acquisition=self.acquisition,
-                        xi=self.xi,
+                    new_seqs = [self._combo_to_full_seq(c) for c in new_combos]
+                elif self.ablation == "no-space":
+                    # AV-NoSpace: still use GPT but ignore space-definition step;
+                    # uniform random pick over full landscape, ignoring clusters / cutoff.
+                    logger.info("[ablation=no-space] Uniform random over full landscape "
+                                "(no cutoff, no clustering)...")
+                    new_combos = self._sample_random_combos(
+                        self.batch_size, exclude=collected_set,
                     )
-
+                    new_seqs = [self._combo_to_full_seq(c) for c in new_combos]
+                elif self.ablation == "no-rl":
+                    # AV-NoRL: skip REINFORCE; sample from current prior, then greedy
+                    # top-k by surrogate score.
+                    logger.info(f"[ablation=no-rl] Sampling {self.n_steps_per_round * self.batch_size} "
+                                f"sequences from prior (no RL update)...")
+                    n_pool = max(self.n_steps_per_round * self.batch_size, self.batch_size * 8)
+                    if self.prior_model is None:
+                        # Round 1 hasn't created models yet (only initial sampling done)
+                        # Fall back to random.
+                        new_combos = self._sample_random_combos(self.batch_size, exclude=collected_set)
+                    else:
+                        generated_seqs = self.sample_from_model(self.prior_model, n_pool)
+                        # Filter to landscape and not-yet-queried, then greedy top-k by surrogate
+                        scored: Dict[str, float] = {}
+                        for s in generated_seqs:
+                            combo = self._seq_to_combo(s)
+                            if combo in collected_set or combo not in self.combo_to_fitness:
+                                continue
+                            if combo in scored:
+                                continue
+                            scored[combo] = 0.0  # placeholder; bulk-score below
+                        candidate_combos = list(scored.keys())
+                        candidate_seqs = [self._combo_to_full_seq(c) for c in candidate_combos]
+                        if candidate_seqs and self.surrogate_trained:
+                            _, raw_pred = self._predict_surrogate(candidate_seqs)
+                            order = np.argsort(-raw_pred)[: self.batch_size]
+                            new_combos = [candidate_combos[i] for i in order]
+                        elif candidate_combos:
+                            new_combos = candidate_combos[: self.batch_size]
+                        else:
+                            new_combos = self._sample_random_combos(self.batch_size, exclude=collected_set)
+                    new_seqs = [self._combo_to_full_seq(c) for c in new_combos]
                 else:
-                    raise ValueError(f"Unknown sampling strategy: {self.sampling_strategy}")
+                    # Default path: train GPT with RL, then apply space-definition selection
+                    logger.info(f"Step 3: Training GPT for {self.n_steps_per_round} steps (collecting variants)...")
+                    generated_seqs, generated_fitness = self._train_gpt_on_surrogate(
+                        self.n_steps_per_round, round_idx=round_idx
+                    )
+
+                    if self.sampling_strategy == 'cluster':
+                        # CLADE-2 style: top-k cutoff + clustering
+                        apply_cutoff = not is_last_round
+
+                        logger.info(f"Cluster sampling from RL variants (cutoff={apply_cutoff})...")
+                        new_seqs, new_combos = self._cluster_sample(
+                            seqs=generated_seqs,
+                            predicted_fitness=generated_fitness,
+                            n_samples=self.batch_size,
+                            exclude_combos=collected_set,
+                            apply_cutoff=apply_cutoff,
+                        )
+
+                    elif self.sampling_strategy == 'active':
+                        # ALDE style: Thompson Sampling or UCB acquisition
+                        logger.info(f"Active sampling from RL variants ({self.acquisition})...")
+                        new_seqs, new_combos = self._active_sample(
+                            seqs=generated_seqs,
+                            n_samples=self.batch_size,
+                            exclude_combos=collected_set,
+                            acquisition=self.acquisition,
+                            xi=self.xi,
+                        )
+
+                    else:
+                        raise ValueError(f"Unknown sampling strategy: {self.sampling_strategy}")
 
             if len(new_combos) == 0:
                 logger.warning("No new samples generated, skipping round")
@@ -1540,6 +1659,7 @@ def run_single_experiment(
     finetune_prior: bool = True,
     n_finetune_epochs: int = 10,
     finetune_lr: float = 1e-4,
+    ablation: str = "none",
 ) -> Dict[str, Any]:
     """Run a single AlphaVariant iterative optimization experiment on GB1.
 
@@ -1560,6 +1680,7 @@ def run_single_experiment(
         finetune_prior: Whether to finetune prior on collected sequences before RL
         n_finetune_epochs: Number of epochs for prior finetuning (default: 10)
         finetune_lr: Learning rate for prior finetuning
+        ablation: Component-removal flag (see IterativeGB1Trainer for values)
     """
 
     if run_id is None:
@@ -1639,6 +1760,7 @@ def run_single_experiment(
         finetune_prior=finetune_prior,
         n_finetune_epochs=n_finetune_epochs,
         finetune_lr=finetune_lr,
+        ablation=ablation,
     )
 
     # Run iterative training
@@ -1898,6 +2020,12 @@ Examples:
                        help="Number of epochs for prior finetuning (default: 10)")
     parser.add_argument("--finetune_lr", type=float, default=1e-4,
                        help="Learning rate for prior finetuning (default: 1e-4)")
+    parser.add_argument(
+        "--ablation", type=str, default="none",
+        choices=["none", "no-gpt", "no-space", "static-reward", "no-rl"],
+        help="Component-removal flag for ablation studies. 'none' (default) "
+             "runs the full AlphaVariant pipeline.",
+    )
 
     args = parser.parse_args()
 
@@ -1959,6 +2087,7 @@ Examples:
             finetune_prior=args.finetune_prior,
             n_finetune_epochs=args.n_finetune_epochs,
             finetune_lr=args.finetune_lr,
+            ablation=args.ablation,
         )
         results.append(result)
 

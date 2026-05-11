@@ -26,6 +26,24 @@ python run_GB1.py --seed 42 --skip_metrics
 
 Methods and Python versions: ALDE (3.11), EvoPlay (3.8), LatProtRL (3.9), FLEXS (3.7), AiCE (3.8), delta_cs (3.7), AlphaVariant (unspecified).
 
+### Per-method conda env locations
+
+The launcher (`scripts/hpc/launch.py --use-method-env`) and profiler resolve the right python from `scripts/hpc/method_resources.yaml`. Current layout on this machine:
+
+| Method        | Env path                                                  |
+|---------------|-----------------------------------------------------------|
+| ALDE          | `ALDE/env`                                                |
+| EvoPlay       | `EvoPlay/env`                                             |
+| FLEXS         | `FLEXS/env`                                               |
+| AiCE          | `AiCE/env`                                                |
+| LatProtRL     | `LatProtRL/env/latprotrl_env` (nested)                    |
+| delta_cs      | `delta_cs/env/delta_cs_env` (nested)                      |
+| alphavariant  | `/home/xux/miniforge3/envs/alphavariant-env` (absolute)   |
+| Random / GreedyWalk | reuses `ALDE/env` (pure-Python, no GPU)             |
+| EVOLVEpro / ftMLDE / MULTIevolve | NOT BUILT YET — see `scripts/setup_baseline_envs.sh` |
+
+`conda_env` in the YAML accepts relative-to-benchmark, absolute, and `~/...` paths. Override per host without editing the launcher.
+
 ## Symlink System (Critical)
 
 Scripts live in `scripts/` (git-tracked) and are symlinked into method dirs (git-ignored). **Always edit scripts in `scripts/<method>/`, never in method dirs.**
@@ -86,6 +104,72 @@ Standard benchmark budget: 96 sequences/round × 5 rounds = 480 queries.
 2. Import utils via compat or direct pattern (see above)
 3. Run `./scripts/add_script_link.sh` to create symlink
 4. Run from method dir: `cd <method> && python run_<dataset>.py --seed 42`
+
+## HPC (iBex / Shaheen)
+
+Job-array launcher under `scripts/hpc/`. One array task = one seed.
+
+```bash
+# Local smoke test (5 seeds, foreground)
+python scripts/hpc/launch.py --method ALDE --dataset GB1 --seeds 5 --cluster local
+
+# iBex submission (50 seeds, GPU array)
+python scripts/hpc/launch.py --method ALDE --dataset GB1 --seeds 50 --cluster ibex
+
+# Shaheen (account required)
+python scripts/hpc/launch.py --method alphavariant --dataset PhoQ --seeds 50 \
+    --cluster shaheen --account k01234
+
+# Forward extra args to the run script (e.g. ablations)
+python scripts/hpc/launch.py --method alphavariant --dataset GB1 --seeds 50 \
+    --cluster ibex --extra-args "--ablation no-gpt"
+
+# Dry-run prints the rendered sbatch script without submitting
+python scripts/hpc/launch.py --method ALDE --dataset GB1 --seeds 50 --cluster ibex --dry-run
+```
+
+Per-method resource defaults (GPUs, walltime, memory) live in `scripts/hpc/method_resources.yaml`.
+
+Resource tracking: wrap any run with `scripts/hpc/log_resource_use.py` to emit a `resource.json` next to results. `scripts/generate_tables.py --include_resources` aggregates these into wall-hours / GPU-hours columns.
+
+### Workstation (multi-GPU)
+
+For a 2-GPU local box, partition the seed list across GPUs with `--gpu-id` + `--seed-start`:
+
+```bash
+# GPU 0 runs seeds [0:15], GPU 1 runs seeds [15:30] (in parallel)
+python scripts/hpc/launch.py --method ALDE --dataset GB1 --seeds 15 \
+    --cluster local --gpu-id 0 --seed-start 0 &
+python scripts/hpc/launch.py --method ALDE --dataset GB1 --seeds 15 \
+    --cluster local --gpu-id 1 --seed-start 15 &
+wait
+```
+
+`--use-method-env` (default) selects the per-method conda env from `method_resources.yaml`, so you don't need to activate envs by hand.
+
+### Profiling
+
+Estimate per-method walltimes before committing to a sweep:
+
+```bash
+# Profile every method on GB1, single seed; CSV at results/_profiles/per_method_walltime.csv
+python scripts/profile_methods.py --dataset GB1 --seed 42
+
+# Pin to one GPU
+python scripts/profile_methods.py --dataset GB1 --seed 42 --gpu-id 0
+
+# Cap any single method at 1 hour
+python scripts/profile_methods.py --dataset GB1 --seed 42 --timeout 3600
+```
+
+Methods with missing envs (no `<method>/env/bin/python`) are reported as `SKIP_NO_ENV` rather than silently using the host python.
+
+## Statistical reporting
+
+```bash
+# Bonferroni-corrected pairwise Wilcoxon test
+python scripts/generate_tables.py --stat_test wilcoxon --bonferroni --alpha 0.05
+```
 
 ## Asana Project
 
