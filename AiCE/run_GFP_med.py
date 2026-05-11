@@ -1,0 +1,1 @@
+/home/xux/Desktop/AlphaVariant/Benchmark/scripts/AiCE/run_GFP_med.py

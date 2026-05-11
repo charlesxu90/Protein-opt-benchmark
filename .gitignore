@@ -149,7 +149,7 @@ example/
 .vscode/
 
 # benchmark methods
-AiCE/
+output/
 ALDE/
 alphavariant/
 delta_cs/
