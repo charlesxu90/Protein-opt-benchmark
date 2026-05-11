@@ -160,7 +160,10 @@ analysis/
 
 # alphavariant
 alphavariant/
-delta_cs/
+
+# delta_cs
+dataset/
+
 # FLEXS
 paper_code/
 .github/
