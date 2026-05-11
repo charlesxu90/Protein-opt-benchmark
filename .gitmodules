@@ -7,3 +7,6 @@
 [submodule "MULTIevolve"]
 	path = MULTIevolve
 	url = https://github.com/ArcInstitute/MULTI-evolve
+[submodule "alphavariant"]
+	path = alphavariant
+	url = https://github.com/charlesxu90/AlphaVariant
