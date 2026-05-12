@@ -1024,8 +1024,12 @@ def compute_metrics(dataset: GenericDataset, oracle: GenericOracle, new_batch, r
     else:
         metrics['normalized_fitness_median_top256'] = 0.0
 
-    # 6. max_fitness
-    metrics['max_fitness'] = float(np.max(top128[1]))
+    # 6. max_fitness — normalized to [0, 1] by global max so reporting is
+    # on the same scale as AiCE/ALDE/FLEXS/EvoPlay/alphavariant.
+    _raw_max = float(np.max(top128[1]))
+    metrics['max_fitness'] = _raw_max / float(global_max) if global_max > 0 else 0.0
+    metrics['max_fitness_raw'] = _raw_max
+    metrics['global_max_raw'] = float(global_max)
 
     # 7. spearman_correlation
     metrics['spearman_correlation'] = spearman_correlation(
@@ -1039,8 +1043,10 @@ def compute_metrics(dataset: GenericDataset, oracle: GenericOracle, new_batch, r
     metrics['recall_high_order'] = recall_high_order(
         collected_seqs, all_seqs, all_fitness)
 
-    # 10. simple_regret
-    metrics['simple_regret'] = float(global_max - np.max(top128[1]))
+    # 10. simple_regret — normalized to [0, 1] (1 - max_fitness_normalized)
+    # so reporting is on the same scale as other methods.
+    metrics['simple_regret'] = 1.0 - metrics['max_fitness']
+    metrics['simple_regret_raw'] = float(global_max - _raw_max)
 
     # 11. miscalibration_area (requires uncertainty estimates)
     if proxy_model is not None and hasattr(proxy_model, 'get_uncertainty'):
@@ -1058,7 +1064,8 @@ def compute_metrics(dataset: GenericDataset, oracle: GenericOracle, new_batch, r
         np.array(new_scores), np.array(proxy_scores))
 
     # 13. global_max_found (for aggregating global_max_hit_count across runs)
-    metrics['global_max_found'] = (metrics['max_fitness'] >= global_max * 0.99)
+    # max_fitness is now normalized to [0,1]; threshold is 0.99 directly.
+    metrics['global_max_found'] = (metrics['max_fitness'] >= 0.99)
 
     return metrics
 

@@ -10,3 +10,9 @@
 [submodule "alphavariant"]
 	path = alphavariant
 	url = https://github.com/charlesxu90/AlphaVariant
+[submodule "CLADE"]
+	path = CLADE
+	url = https://github.com/WeilabMSU/CLADE-2.0
+[submodule "Mu-Protein"]
+	path = Mu-Protein
+	url = https://github.com/microsoft/Mu-Protein

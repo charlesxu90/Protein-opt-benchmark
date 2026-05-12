@@ -57,7 +57,14 @@ def run_single_experiment(
     np.random.seed(seed)
 
     # Load landscape
-    all_sequences, all_fitness = load_landscape_data(dataset, data_dir=data_dir)
+    all_sequences, all_fitness_raw = load_landscape_data(dataset, data_dir=data_dir)
+    # Normalize to [0,1] by dividing by the global max, matching the
+    # convention used by AiCE/ALDE/FLEXS/EvoPlay/alphavariant so that
+    # `max_fitness` and `simple_regret` are reported on the same scale
+    # across all methods. The aggregator (`scripts/aggregate_metrics.py`)
+    # also has a fallback rescale, but normalizing here is the right place.
+    _global_max_raw = float(np.max(all_fitness_raw))
+    all_fitness = all_fitness_raw / _global_max_raw
     n_total = len(all_sequences)
     total_budget = batch_size * n_rounds
 
@@ -113,12 +120,17 @@ def run_single_experiment(
             wildtype=wildtype,
         )
 
-        result['metrics'] = metrics_result.to_dict()
+        m_dict = metrics_result.to_dict()
+        # Preserve raw value for transparency
+        m_dict['max_fitness_raw'] = float(np.max(all_fitness_raw[sampled_indices]))
+        m_dict['global_max_raw'] = _global_max_raw
+        result['metrics'] = m_dict
         result['fitness_trajectory'] = metrics_result.fitness_trajectory
         result['regret_trajectory'] = metrics_result.regret_trajectory
 
-        print(f"  Max Fitness: {metrics_result.max_fitness:.4f}")
-        print(f"  Simple Regret: {metrics_result.simple_regret:.4f}")
+        print(f"  Max Fitness (norm): {metrics_result.max_fitness:.4f}")
+        print(f"  Max Fitness (raw):  {m_dict['max_fitness_raw']:.4f}")
+        print(f"  Simple Regret:      {metrics_result.simple_regret:.4f}")
         print(f"  Normalized Fitness (Top-128): {metrics_result.normalized_fitness_median_top128:.4f}")
 
         metrics_path = os.path.join(subdir, f"metrics_seed{seed}.json")
