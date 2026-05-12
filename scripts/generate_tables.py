@@ -120,7 +120,24 @@ def find_result_files(base_dir: Path, method: str, dataset: str) -> List[Path]:
     return sorted(set(results))
 
 
-def load_metrics_from_files(files: List[Path]) -> List[Dict]:
+def _extract_seed_from_path(p: Path) -> int:
+    """Get the seed number from filenames like metrics_seed621.json or seed_621/metrics.json."""
+    import re
+    s = str(p)
+    # Pattern 1: metrics_seed<N>.json
+    m = re.search(r"metrics_seed(\d+)\.json", s)
+    if m:
+        return int(m.group(1))
+    # Pattern 2: seed_<N>/metrics.json
+    m = re.search(r"seed_(\d+)/metrics\.json", s)
+    if m:
+        return int(m.group(1))
+    return -1
+
+
+def load_metrics_from_files(files: List[Path],
+                            allowed_seeds: Optional[set] = None
+                            ) -> List[Dict]:
     """Load metrics from a list of JSON files.
 
     Handles three schema flavors:
@@ -128,9 +145,25 @@ def load_metrics_from_files(files: List[Path]) -> List[Dict]:
       - data["metrics"] is a list of per-round dicts (delta_cs); prefer
         data["final_metrics"], otherwise take the last round
       - top-level dict already has metric keys (legacy)
+
+    When `allowed_seeds` is provided, only includes records whose seed is in
+    the set. Used to filter to a canonical set of seeds for fair comparison.
+
+    When multiple files report the same seed (from re-runs with different
+    configs), keeps the **most recently modified** one. This is a defensible
+    choice for "latest known-good" results.
     """
-    metrics_list = []
-    for fpath in files:
+    # Sort by mtime descending so latest wins in seed dedup
+    sorted_files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+    metrics_by_seed: Dict[int, Dict] = {}
+    unkeyed: List[Dict] = []
+    for fpath in sorted_files:
+        seed = _extract_seed_from_path(fpath)
+        if allowed_seeds is not None:
+            if seed < 0 or seed not in allowed_seeds:
+                continue
+        if seed >= 0 and seed in metrics_by_seed:
+            continue  # already have most recent for this seed
         try:
             with open(fpath) as f:
                 data = json.load(f)
@@ -146,10 +179,17 @@ def load_metrics_from_files(files: List[Path]) -> List[Dict]:
             elif 'max_fitness' in data:
                 m = data
             if m is not None:
-                metrics_list.append(m)
+                m = dict(m)
+                m["_seed"] = seed
+                if seed >= 0:
+                    metrics_by_seed[seed] = m
+                else:
+                    unkeyed.append(m)
         except (json.JSONDecodeError, KeyError) as e:
             print(f"  Warning: Could not load {fpath}: {e}")
-    return metrics_list
+
+    # Stable order: sort by seed for reproducibility
+    return [metrics_by_seed[s] for s in sorted(metrics_by_seed)] + unkeyed
 
 
 def aggregate_metrics(metrics_list: List[Dict]) -> Dict[str, Dict[str, float]]:
@@ -180,14 +220,19 @@ def collect_all_results(
     base_dir: Path,
     methods: List[str],
     datasets: List[str],
+    allowed_seeds: Optional[set] = None,
 ) -> Dict[Tuple[str, str], Dict]:
-    """Collect aggregated results for all method-dataset pairs."""
+    """Collect aggregated results for all method-dataset pairs.
+
+    `allowed_seeds`: if provided, only metrics from those seeds are loaded
+    (used for strict-N-seed comparison across methods).
+    """
     results = {}
     for method in methods:
         for dataset in datasets:
             files = find_result_files(base_dir, method, dataset)
             if files:
-                metrics_list = load_metrics_from_files(files)
+                metrics_list = load_metrics_from_files(files, allowed_seeds)
                 if metrics_list:
                     agg = aggregate_metrics(metrics_list)
                     results[(method, dataset)] = {
@@ -504,6 +549,14 @@ def main():
         "--include_resources", action="store_true",
         help="Include GPU-hour / wall-clock columns from resource.json files",
     )
+    parser.add_argument(
+        "--first_n_seeds", type=int, default=None,
+        help="Restrict to the first N seeds from rand_seeds.txt (e.g., 30 for the canonical sweep)",
+    )
+    parser.add_argument(
+        "--seed_file", type=str, default=None,
+        help="Path to seed file (default: rand_seeds.txt at benchmark root)",
+    )
 
     args = parser.parse_args()
 
@@ -520,8 +573,28 @@ def main():
     print(f"Methods: {methods}")
     print(f"Datasets: {datasets}")
 
+    # Optional: restrict to the first N seeds of rand_seeds.txt
+    allowed_seeds: Optional[set] = None
+    if args.first_n_seeds is not None:
+        seed_file = (Path(args.seed_file) if args.seed_file
+                     else benchmark_root / "rand_seeds.txt")
+        if not seed_file.exists():
+            print(f"Seed file not found: {seed_file}")
+            return
+        seeds = []
+        with open(seed_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                seeds.append(int(line))
+                if len(seeds) >= args.first_n_seeds:
+                    break
+        allowed_seeds = set(seeds)
+        print(f"Restricting to first {len(allowed_seeds)} seeds: {sorted(allowed_seeds)[:5]}...")
+
     # Collect all results
-    results = collect_all_results(base_dir, methods, datasets)
+    results = collect_all_results(base_dir, methods, datasets, allowed_seeds=allowed_seeds)
 
     if not results:
         print("\nNo results found. Make sure result files exist as:")

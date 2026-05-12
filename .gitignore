@@ -148,6 +148,10 @@ examples/
 example/
 .vscode/
 
+# hpc
+_jobs/
+_logs/
+
 # AiCE
 output/
 
