@@ -223,10 +223,16 @@ def load_seeds_from_file(filepath: str, num_seeds: int) -> List[int]:
 
 def save_aggregated_results(results, dataset, output_path):
     import pandas as pd
+    import dataclasses
+    valid_fields = {f.name for f in dataclasses.fields(MetricsResult)}
+    # Saved dicts use key 'hit_rate'; dataclass field is 'hit_rate_value'.
+    rename = {'hit_rate': 'hit_rate_value'}
     metrics_results = []
     for r in results:
         if 'metrics' in r:
-            mr = MetricsResult(**r['metrics'])
+            kwargs = {rename.get(k, k): v for k, v in r['metrics'].items()}
+            kwargs = {k: v for k, v in kwargs.items() if k in valid_fields}
+            mr = MetricsResult(**kwargs)
             mr.fitness_trajectory = r.get('fitness_trajectory', [])
             mr.regret_trajectory = r.get('regret_trajectory', [])
             metrics_results.append(mr)

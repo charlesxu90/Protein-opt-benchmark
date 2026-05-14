@@ -1365,6 +1365,10 @@ def main():
     if args.output_path is None:
         args.output_path = f'results/{dataset_name}_delta_cs/'
     output_path = args.output_path
+    # Ensure the output dir exists before any save_path / pkl.gz writes.
+    # The previous behavior failed for new datasets with a FileNotFoundError
+    # when gzip.open(save_path, 'wb') ran before the dir was created.
+    os.makedirs(output_path, exist_ok=True)
 
     if args.save_path is None:
         args.save_path = os.path.join(output_path, f'{dataset_name}_delta_cs.pkl.gz')

@@ -1,0 +1,1 @@
+/home/xux/Desktop/AlphaVariant/Benchmark/scripts/GreedyWalk/run_mTagBFP2_blue.py

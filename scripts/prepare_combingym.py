@@ -97,6 +97,14 @@ DATASETS: Dict[str, Dict] = {
         "fitness_col": None,  # multi-property; properties listed below
         "properties": ["blue", "red"],
     },
+    "mTagBFP2": {
+        # eqFP611(mTagBFP2) per CombinGym Data_summary.xlsx.
+        "description": "mTagBFP2 fluorescent protein, 13-site, 8192 variants, multi-property (blue/red/combined)",
+        "subpaths": ["Data/DMS/Clean/eqFP611_clean.xlsx"],
+        "seq_col": "genotype",
+        "fitness_col": None,
+        "properties": ["blue", "red", "combined"],
+    },
     "SpCas9": {
         "description": "SpCas9 nuclease, combinatorial DMS",
         "subpaths": ["Data/DMS/Clean/SpCas9_clean.xlsx"],
@@ -112,11 +120,46 @@ DATASETS: Dict[str, Dict] = {
         "properties": None,
     },
     "RhlA": {
-        "description": "RhlA rhamnolipid synthase, combinatorial DMS",
+        "description": "RhlA rhamnosyltransferase, 11-site, 2.3k variants, multi-property (substrate selectivity + specific activity, log-transformed)",
         "subpaths": ["Data/DMS/Clean/RhlA_clean.xlsx"],
         "seq_col": "genotype",
         "fitness_col": None,
+        "properties": ["%Rha-(C8-C10)_log", "Rha-(C8-C10)_log"],
+        "property_aliases": {
+            "%Rha-(C8-C10)_log": "selectivity",
+            "Rha-(C8-C10)_log": "activity",
+        },
+        # CombinGym's RhlA genotype is just the 11-char combo; embed into the
+        # 295-aa WT at the user-spec positions so seq is full-length.
+        "expand_combo": {
+            "wt": "MRRESLLVSVCKGLRVHVERVGQDPGRSTVMLVNGAMATTASFARTCKCLAEHFNVVLFDLPFAGQSRQHNPQRGLITKDDEVEILLALIERFEVNHLVSASWGGISTLLALSRNPRGIRSSVVMAFAPGLNQAMLDYVGRAQALIELDDKSAIGHLLNETVGKYLPQRLKASNHQHMASLATGEYEQARFHIDQVLALNDRGYLACLERIQSHVHFINGSWDEYTTAEDARQFRDYLPHCSFSRVEGTGHFLDLESKLAAVRVHRALLEHLLKQPEPQRAERAAGFHEMAIGYA",
+            "positions": [42, 43, 73, 74, 101, 143, 148, 173, 176, 177, 182],
+        },
+    },
+    "CR6261_H1": {
+        "description": "CR6261 anti-influenza bnAb, H1 hemagglutinin binding, 11-site (~1.9k variants)",
+        "subpaths": ["Data/DMS/Clean/bnAbs_CR6261_H1_clean.xlsx"],
+        "seq_col": "genotype",
+        "fitness_col": "h1_mean",
         "properties": None,
+    },
+    "CR6261_H9": {
+        "description": "CR6261 anti-influenza bnAb, H9 hemagglutinin binding, 11-site (~1.9k variants)",
+        "subpaths": ["Data/DMS/Clean/bnAbs_CR6261_H9_clean.xlsx"],
+        "seq_col": "genotype",
+        "fitness_col": "h9_mean",
+        "properties": None,
+    },
+    "CR6261": {
+        "description": "CR6261 anti-influenza bnAb, joint H1+H9 binding multi-objective (inner-merge on genotype)",
+        "merge_subpaths": [
+            "Data/DMS/Clean/bnAbs_CR6261_H1_clean.xlsx",
+            "Data/DMS/Clean/bnAbs_CR6261_H9_clean.xlsx",
+        ],
+        "merge_on": "genotype",
+        "seq_col": "genotype",
+        "fitness_col": None,
+        "properties": ["h1_mean", "h9_mean"],
     },
 }
 
@@ -208,6 +251,7 @@ def write_dataset(
     detected: Dict,
     output_path: Path,
     properties: Optional[List[str]],
+    property_aliases: Optional[Dict[str, str]] = None,
 ) -> Dict:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -217,6 +261,7 @@ def write_dataset(
             f"No sequence column detected. Available: {list(df.columns)}"
         )
 
+    aliases = property_aliases or {}
     if properties:
         property_cols = detected.get("properties") or []
         if len(property_cols) < 2:
@@ -226,13 +271,13 @@ def write_dataset(
             )
         out = pd.DataFrame({"seq": df[seq_col].values})
         for p in property_cols:
-            out[p] = df[p].values
+            out[aliases.get(p, p)] = df[p].values
         out = out.dropna().drop_duplicates(subset="seq", keep="first")
         out.to_csv(output_path, index=False)
         return {
             "n_variants": len(out),
             "seq_len": len(str(out["seq"].iloc[0])),
-            "properties": property_cols,
+            "properties": [aliases.get(p, p) for p in property_cols],
         }
 
     fitness_col = detected.get("fitness")
@@ -240,8 +285,14 @@ def write_dataset(
         raise ValueError(
             f"No fitness column detected. Available: {list(df.columns)}"
         )
+    # Strip terminal stop codons ("*") from sequences — they are metadata,
+    # not residues, and break methods that use 20-AA alphabets (EvoPlay,
+    # alphavariant, delta_cs). CreiLOV's CombinGym data contains a single
+    # trailing "*" on every sequence; other datasets are unaffected.
+    seqs_clean = [s.rstrip("*") if isinstance(s, str) else s
+                  for s in df[seq_col].values]
     cols = {
-        "seq": df[seq_col].values,
+        "seq": seqs_clean,
         "fitness": df[fitness_col].astype(float).values,
     }
     # Pass-through n_mut (CombinGym writes it directly)
@@ -321,35 +372,81 @@ def main() -> int:
     for name in selected:
         info = DATASETS[name]
         print(f"\n--- {name} ---")
-        csv_path = find_csv(repo_root, info["subpaths"])
-        if csv_path is None:
-            print(f"  CSV not found in repo. Tried: {info['subpaths']}", file=sys.stderr)
-            summary[name] = {"status": "FAILED", "error": "CSV not found"}
-            continue
 
-        try:
-            df = read_table(csv_path)
-        except Exception as e:
-            summary[name] = {"status": "FAILED", "error": str(e)}
-            print(f"  ERROR reading {csv_path}: {e}", file=sys.stderr)
-            continue
-        print(f"  Read {csv_path} ({len(df)} rows, columns: {list(df.columns)})")
+        # Resolve dataframe: either single source xlsx, or inner-merge across
+        # multiple xlsx files (used for CR6261 joint = H1 + H9).
+        if info.get("merge_subpaths"):
+            merge_on = info.get("merge_on", "genotype")
+            dfs = []
+            missing = []
+            for sp in info["merge_subpaths"]:
+                p = repo_root / sp
+                if not p.exists():
+                    missing.append(sp)
+                    continue
+                dfs.append(read_table(p))
+            if missing:
+                summary[name] = {"status": "FAILED", "error": f"merge sources missing: {missing}"}
+                print(f"  Merge sources not found: {missing}", file=sys.stderr)
+                continue
+            df = dfs[0]
+            for extra in dfs[1:]:
+                shared = [c for c in extra.columns if c in df.columns and c != merge_on]
+                df = df.merge(extra.drop(columns=shared), on=merge_on, how="inner")
+            print(f"  Merged {len(info['merge_subpaths'])} files on '{merge_on}' "
+                  f"-> {len(df)} rows, columns: {list(df.columns)}")
+        else:
+            csv_path = find_csv(repo_root, info["subpaths"])
+            if csv_path is None:
+                print(f"  CSV not found in repo. Tried: {info['subpaths']}", file=sys.stderr)
+                summary[name] = {"status": "FAILED", "error": "CSV not found"}
+                continue
+            try:
+                df = read_table(csv_path)
+            except Exception as e:
+                summary[name] = {"status": "FAILED", "error": str(e)}
+                print(f"  ERROR reading {csv_path}: {e}", file=sys.stderr)
+                continue
+            print(f"  Read {csv_path} ({len(df)} rows, columns: {list(df.columns)})")
 
         seq_override = args.seq_col or info.get("seq_col")
         fitness_override = args.fitness_col or info.get("fitness_col")
         detected = detect_columns(df, seq_override, fitness_override, info["properties"])
         if info.get("combo_positions"):
             detected["combo_positions"] = info["combo_positions"]
+        aliases = info.get("property_aliases") or {}
+
+        # If source stores only the combo (not full-length seq), expand it
+        # into the WT at the configured positions so output seqs are usable
+        # by methods that need full sequences.
+        expand = info.get("expand_combo")
+        if expand:
+            wt = expand["wt"]
+            zero_idx = [p - 1 for p in expand["positions"]]
+            seq_col = detected.get("seq")
+            def _expand(combo, _wt=wt, _idx=zero_idx):
+                if not isinstance(combo, str) or len(combo) != len(_idx):
+                    return None
+                s = list(_wt)
+                for i, pos in enumerate(_idx):
+                    s[pos] = combo[i]
+                return "".join(s)
+            df = df.copy()
+            df["_AACombo"] = df[seq_col].values
+            df[seq_col] = df[seq_col].map(_expand)
+            df = df.dropna(subset=[seq_col])
+            detected["combo_col"] = "_AACombo"
 
         try:
             if info["properties"]:
                 # Joint multi-property file
                 joint_path = data_dir / name / "data.csv"
-                joint_stats = write_dataset(df, detected, joint_path, info["properties"])
+                joint_stats = write_dataset(df, detected, joint_path,
+                                            info["properties"], aliases)
                 summary[name] = {"status": "OK", "joint": str(joint_path), **joint_stats}
                 # Per-property single-objective files
                 for prop in detected["properties"]:
-                    suffix = prop.replace("fitness_", "")
+                    suffix = aliases.get(prop, prop.replace("fitness_", ""))
                     sub_path = data_dir / f"{name}_{suffix}" / "data.csv"
                     single = pd.DataFrame({
                         "seq": df[detected["seq"]].values,

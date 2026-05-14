@@ -27,8 +27,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Per-dataset global maxima (used to normalize raw max_fitness reports).
+# Values are max(fitness) over data/<name>/data.csv.
 GLOBAL_MAX = {
-    "GB1": 8.76196565571,
+    "GB1":       8.76196565571,
+    "4site_GB1": 8.761966,         # same landscape, new dataset name in CombinGym
+    "CR9114":    9.834508,         # CombinGym bnAbs_CR9114_H1
+    "CreiLOV":   15686.304864,     # CombinGym CreiLOV
+    "TRPB":      1.0000,           # CombinGym tryptophan synthase β-subunit
+    # ProteinGym / internal landscapes that are already in [0,1] use 1.0
+    # so normalization is an identity (raw values pass through).
+    "AAV_med":  1.0,
+    "AAV_hard": 1.0,
+    "GFP_med":  1.0,
+    "GFP_hard": 1.561,
+    # eqFP611 / mTagBFP2 single-property splits (CombinGym dual-channel data)
+    "eqFP611_blue":  1.6077,
+    "eqFP611_red":   1.6924,
+    "mTagBFP2_blue": 1.6077,
+    "mTagBFP2_red":  1.6924,
+    # 4-site combinatorial ProteinGym/Wittmann-style libraries
+    "PAB1":         2.6279,
+    "4site_PhoQ":   133.5943,
+    "4site_TEV":    1.0000,
 }
 
 # (display name, glob pattern under <method>/results/ for the metrics JSON)

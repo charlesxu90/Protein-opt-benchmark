@@ -1,0 +1,1 @@
+/home/xux/Desktop/AlphaVariant/Benchmark/scripts/Random/run_4site_PhoQ.py

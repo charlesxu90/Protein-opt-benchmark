@@ -38,6 +38,7 @@ mkdir -p "$REPO_BASE/EVOLVEpro" "$REPO_BASE/ftMLDE" "$REPO_BASE/MULTIevolve"
 create_links "$SCRIPT_BASE/EVOLVEpro" "$REPO_BASE/EVOLVEpro"
 create_links "$SCRIPT_BASE/ftMLDE" "$REPO_BASE/ftMLDE"
 create_links "$SCRIPT_BASE/MULTIevolve" "$REPO_BASE/MULTIevolve"
+create_links "$SCRIPT_BASE/CLADE" "$REPO_BASE/CLADE"
 
 # Handle AiCE nested scripts/ directory
 mkdir -p "$REPO_BASE/AiCE/scripts"

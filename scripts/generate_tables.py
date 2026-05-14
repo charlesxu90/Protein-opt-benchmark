@@ -95,9 +95,13 @@ def find_result_files(base_dir: Path, method: str, dataset: str) -> List[Path]:
         parent = pattern_dir.parent
         if not parent.exists():
             continue
-        # Search for metrics files recursively
+        # Search for metrics files recursively.
+        # CRITICAL: require dataset name in path. Previously this was a
+        # `dataset OR method` filter, which pulled in cross-dataset results
+        # (e.g., GB1 EvoPlay files getting attributed to CR9114 because
+        # "evoplay" is in the path).
         for path in parent.rglob('metrics_seed*.json'):
-            if dataset.lower() in str(path).lower() or method.lower() in str(path).lower():
+            if dataset.lower() in str(path).lower():
                 results.append(path)
 
     # Also check method-specific result directories
@@ -207,10 +211,13 @@ def aggregate_metrics(metrics_list: List[Dict]) -> Dict[str, Dict[str, float]]:
     agg = {}
     for key, vals in all_values.items():
         if vals:
+            arr = np.asarray(vals)
             agg[key] = {
-                'mean': float(np.mean(vals)),
-                'std': float(np.std(vals)),
-                'median': float(np.median(vals)),
+                'mean': float(np.mean(arr)),
+                'std': float(np.std(arr)),
+                'median': float(np.median(arr)),
+                'q1': float(np.percentile(arr, 25)),
+                'q3': float(np.percentile(arr, 75)),
                 'n': len(vals),
             }
     return agg
@@ -243,23 +250,29 @@ def collect_all_results(
     return results
 
 
-def format_cell(mean: float, std: float, n: int, bold: bool = False) -> str:
-    """Format a table cell as mean ± std."""
+def format_cell(stats: Dict, n: int, bold: bool = False,
+                report: str = 'mean_std') -> str:
+    """Format a table cell. `report` selects mean±std or median[Q1,Q3]."""
     if n <= 1:
-        text = f"{mean:.4f}"
+        text = f"{stats['mean']:.4f}"
+    elif report == 'median_iqr':
+        text = f"{stats['median']:.4f} [{stats['q1']:.4f}, {stats['q3']:.4f}]"
     else:
-        text = f"{mean:.4f} ± {std:.4f}"
+        text = f"{stats['mean']:.4f} ± {stats['std']:.4f}"
     if bold:
         return f"**{text}**"
     return text
 
 
-def format_cell_latex(mean: float, std: float, n: int, bold: bool = False) -> str:
-    """Format a table cell for LaTeX."""
+def format_cell_latex(stats: Dict, n: int, bold: bool = False,
+                      report: str = 'mean_std') -> str:
+    """LaTeX-formatted table cell."""
     if n <= 1:
-        text = f"{mean:.4f}"
+        text = f"{stats['mean']:.4f}"
+    elif report == 'median_iqr':
+        text = f"{stats['median']:.4f} [{stats['q1']:.4f}, {stats['q3']:.4f}]"
     else:
-        text = f"{mean:.4f} $\\pm$ {std:.4f}"
+        text = f"{stats['mean']:.4f} $\\pm$ {stats['std']:.4f}"
     if bold:
         return f"\\textbf{{{text}}}"
     return text
@@ -271,6 +284,7 @@ def generate_per_dataset_table(
     methods: List[str],
     metrics: List[str],
     fmt: str = 'markdown',
+    report: str = 'mean_std',
 ) -> str:
     """Generate a comparison table for a single dataset."""
     lines = []
@@ -321,15 +335,15 @@ def generate_per_dataset_table(
             if key not in results:
                 continue
             n = results[key]['n_runs']
-            cells = [f"| {method} | {n} |"]
+            cells = [method, str(n)]
             for metric in available_metrics:
                 agg = results[key]['aggregated']
                 if metric in agg:
                     bold = (best_method.get(metric) == method)
-                    cells.append(format_cell(agg[metric]['mean'], agg[metric]['std'], n, bold))
+                    cells.append(format_cell(agg[metric], n, bold, report=report))
                 else:
                     cells.append("—")
-            lines.append(" | ".join(cells) + " |")
+            lines.append("| " + " | ".join(cells) + " |")
         lines.append("")
 
     elif fmt == 'latex':
@@ -356,7 +370,7 @@ def generate_per_dataset_table(
                 agg = results[key]['aggregated']
                 if metric in agg:
                     bold = (best_method.get(metric) == method)
-                    cells.append(format_cell_latex(agg[metric]['mean'], agg[metric]['std'], n, bold))
+                    cells.append(format_cell_latex(agg[metric], n, bold, report=report))
                 else:
                     cells.append("---")
             lines.append(" & ".join(cells) + " \\\\")
@@ -554,6 +568,10 @@ def main():
         help="Restrict to the first N seeds from rand_seeds.txt (e.g., 30 for the canonical sweep)",
     )
     parser.add_argument(
+        "--report", choices=["mean_std", "median_iqr"], default="mean_std",
+        help="Aggregation report format: mean ± std (default) or median [Q1, Q3]",
+    )
+    parser.add_argument(
         "--seed_file", type=str, default=None,
         help="Path to seed file (default: rand_seeds.txt at benchmark root)",
     )
@@ -623,7 +641,8 @@ def main():
         for dataset in datasets:
             has_data = any((m, dataset) in results for m in methods)
             if has_data:
-                table = generate_per_dataset_table(results, dataset, methods, metrics, fmt)
+                table = generate_per_dataset_table(results, dataset, methods, metrics, fmt,
+                                                   report=args.report)
                 all_tables.append(table)
 
         # Statistical tests (markdown only for readability)
