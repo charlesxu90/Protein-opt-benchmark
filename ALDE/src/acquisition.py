@@ -48,9 +48,13 @@ class Acquisition:
     def get_next_query(self, samp_x, samp_y, samp_indices):
         """Returns the next sample to query."""
 
-        self.preds[np.array(samp_indices, dtype=int)] = min(self.preds) #set the already queried values to the minumum of acquisition
+        # Mask already-queried indices with -inf so argmax can never re-pick them.
+        # The original `min(self.preds)` fails when masked values tie the running max,
+        # which on GB1 caused the entire batch to collapse to the global-max index.
+        idx_int = np.asarray(samp_indices, dtype=np.int64)
+        self.preds[idx_int] = -np.inf
 
-        ind = np.argmax(self.preds)
+        ind = int(np.argmax(self.preds))
         best_x = torch.reshape(self.disc_X[ind].detach(), (1, -1)).double()
         acq_val = self.preds[ind]
         best_idx = torch.tensor(ind)

@@ -558,16 +558,23 @@ def load_dataset(data_dir: str, dataset: str) -> Tuple[List[str], np.ndarray, pd
     seq_lengths = [len(s) for s in sequences]
     seq_length = max(set(seq_lengths), key=seq_lengths.count)
 
-    # Wildtype: prefer the n_muts==0 row (natural wildtype) when present.
-    # Falling back to argmax(fitness) is LEAKY for AiCE — the scorer biases
-    # templates toward wildtype-neighbors, which would then be biased toward
-    # the global-max sequence.
-    if 'n_muts' in df.columns and (df['n_muts'] == 0).any():
+    # Wildtype resolution order — strict-to-lax. argmax(fitness) is LEAKY for
+    # AiCE because the scorer's WT-neighborhood template would then point at
+    # the global maximum, so we only fall back to it when nothing else exists.
+    wt_fasta = os.path.join(data_dir, dataset, "wt.fasta")
+    wildtype = None
+    if os.path.exists(wt_fasta):
+        with open(wt_fasta) as fh:
+            lines = [ln.strip() for ln in fh if ln.strip() and not ln.startswith('>')]
+        if lines:
+            wildtype = "".join(lines)
+    if wildtype is None and 'n_muts' in df.columns and (df['n_muts'] == 0).any():
         wt_idx = int(df.index[df['n_muts'] == 0][0])
         wildtype = sequences[wt_idx]
-    else:
-        print(f"WARNING: no n_muts==0 row in {dataset}; falling back to argmax(fitness) "
-              f"as wildtype, which is LEAKY for AiCE.")
+    if wildtype is None:
+        print(f"WARNING: no wt.fasta or n_muts==0 row for {dataset}; falling back to "
+              f"argmax(fitness) as wildtype — LEAKY for AiCE. Drop a "
+              f"data/{dataset}/wt.fasta to fix.")
         wildtype = sequences[int(np.argmax(fitness))]
 
     # Normalize fitness to [0, 1]
@@ -1167,8 +1174,8 @@ Examples:
     print(f"  - Beta: {args.beta}")
     print(f"  - Gamma: {args.gamma}")
     print(f"  - Batch size: 96")
-    print(f"  - Rounds: 15 (1 init + 14 iterations)")
-    print(f"  - Total samples per run: 1440 (96 init + 1344 budget)")
+    print(f"  - Rounds: 5 (1 init + 4 iterations)")
+    print(f"  - Total samples per run: 480 (96 init + 384 budget)")
     print(f"\nResults saved to: {args.output_path}")
     print(f"{'='*60}\n")
 
