@@ -223,7 +223,7 @@ class GenericOracle:
 
         # Auto-detect sequence column name
         seq_col = None
-        for candidate in ['seq', 'sequence', 'Combo', 'AACombo', 'variant', 'mutant']:
+        for candidate in ['AACombo', 'Combo', 'seq', 'sequence', 'variant', 'mutant']:
             if candidate in df.columns:
                 seq_col = candidate
                 break
@@ -1389,7 +1389,7 @@ def main():
 
         # Auto-detect sequence column
         seq_col = None
-        for candidate in ['seq', 'sequence', 'Combo', 'AACombo', 'variant', 'mutant']:
+        for candidate in ['AACombo', 'Combo', 'seq', 'sequence', 'variant', 'mutant']:
             if candidate in df.columns:
                 seq_col = candidate
                 break

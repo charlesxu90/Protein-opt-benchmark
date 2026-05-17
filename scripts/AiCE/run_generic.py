@@ -120,6 +120,12 @@ class AiCEScorer:
         freq_data: Optional[Dict] = None
     ):
         self.sequences = sequences
+        # `fitness` is kept only for the test-time evaluation step (it is the
+        # oracle). The scorer itself must NOT peek at it for template / LD
+        # construction — that was the source of label leakage in the previous
+        # implementation. Templates are built from observations passed in via
+        # `update_with_observations(...)` plus the structure-only wildtype
+        # neighborhood.
         self.fitness = fitness
         self.config = config or AiCEConfig()
         self.wildtype = wildtype
@@ -131,15 +137,26 @@ class AiCEScorer:
         # Amino acids
         self.amino_acids = "ACDEFGHIKLMNPQRSTVWY"
 
-        # Load or compute frequency data
-        if freq_data is not None:
-            self.freq_data = freq_data
-        else:
-            self.freq_data = self._compute_frequencies()
+        # Observed (queried) data — empty until update_with_observations is called.
+        self._observed_seqs: List[str] = []
+        self._observed_fitness: np.ndarray = np.array([], dtype=float)
 
-        # Precompute LD matrix for positions with variation
+        # Precompute positions that show variation across the library.
         self.variable_positions = self._find_variable_positions()
-        self.ld_matrix = self._compute_ld_matrix()
+
+        if freq_data is not None:
+            # External (e.g. real ProteinMPNN) frequencies — use as-is.
+            self.freq_data = freq_data
+            self.ld_matrix = np.ones((max(len(self.variable_positions), 1),
+                                      max(len(self.variable_positions), 1)))
+        else:
+            # Initialize templates from structure-only signal (wildtype + WT
+            # neighborhood). No fitness labels are used here.
+            self.freq_data = self._compute_frequencies_from_seqs(
+                self._structural_templates()
+            )
+            self.ld_matrix = np.ones((max(len(self.variable_positions), 1),
+                                      max(len(self.variable_positions), 1)))
 
         # Precompute all scores for efficiency
         self._precompute_scores()
@@ -156,89 +173,99 @@ class AiCEScorer:
                 variable_pos.append(pos)
         return variable_pos
 
-    def _compute_frequencies(self) -> Dict:
+    def _structural_templates(self) -> List[str]:
         """
-        Compute position-specific amino acid frequencies.
-
-        In the actual AiCE pipeline, this comes from ProteinMPNN inverse folding.
-        Here we simulate it using a combination of:
-        1. High-fitness sequences (top 10%)
-        2. Evolutionary coupling patterns
+        Structure-only template set: the wildtype plus its Hamming-≤2 neighborhood.
+        Independent of fitness labels — safe to use before any observation.
         """
-        freq_data = {}
-
-        # Use top percentile as "structure-compatible" sequences
-        # This simulates what ProteinMPNN would output
-        threshold = np.percentile(self.fitness, 90)
-        high_fit_mask = self.fitness >= threshold
-        high_fit_seqs = [seq for seq, is_high in zip(self.sequences, high_fit_mask) if is_high]
-
-        # Also consider wildtype-like sequences (low mutation count) as structural templates
         wt = self.wildtype
-        wt_like = []
+        tmpl = [wt]
         for seq in self.sequences:
             try:
-                if hamming_distance(seq, wt) <= 2:
-                    wt_like.append(seq)
+                d = hamming_distance(seq, wt)
             except ValueError:
-                # Sequences may have different lengths, skip
                 continue
+            if 0 < d <= 2:
+                tmpl.append(seq)
+        return tmpl
 
-        # Combine both sets with weights
-        template_seqs = high_fit_seqs + wt_like * 2  # Weight WT-like sequences
-
+    def _compute_frequencies_from_seqs(self, template_seqs: List[str]) -> Dict:
+        """Position-specific amino-acid frequencies from a given template set."""
+        freq_data: Dict[int, Dict[str, float]] = {}
         if not template_seqs:
-            template_seqs = self.sequences[:100]  # Fallback
-
+            for pos in range(self.seq_length):
+                freq_data[pos] = {aa: 0.0 for aa in self.amino_acids}
+            return freq_data
+        n = len(template_seqs)
         for pos in range(self.seq_length):
             freq_data[pos] = {}
             for aa in self.amino_acids:
                 count = sum(1 for seq in template_seqs if len(seq) > pos and seq[pos] == aa)
-                freq_data[pos][aa] = count / len(template_seqs) if template_seqs else 0.0
-
+                freq_data[pos][aa] = count / n
         return freq_data
 
-    def _compute_ld_matrix(self) -> np.ndarray:
-        """
-        Compute pairwise Linkage Disequilibrium matrix for variable positions.
-
-        LD measures the non-random association of alleles at different positions.
-        High LD between positions suggests they should mutate together.
-        """
+    def _compute_ld_matrix_from_seqs(self, template_seqs: List[str]) -> np.ndarray:
+        """LD matrix over `variable_positions` computed from a given template set."""
         n_pos = len(self.variable_positions)
         if n_pos == 0:
             return np.ones((1, 1))
-
         ld_matrix = np.ones((n_pos, n_pos))
-
-        # Use high-fitness sequences to compute LD
-        threshold = np.percentile(self.fitness, 90)
-        high_fit_mask = self.fitness >= threshold
-        high_fit_seqs = [seq for seq, is_high in zip(self.sequences, high_fit_mask) if is_high]
-
-        if len(high_fit_seqs) < 10:
+        if len(template_seqs) < 10:
             return ld_matrix
-
         for i, pos_i in enumerate(self.variable_positions):
             for j, pos_j in enumerate(self.variable_positions):
                 if i >= j:
                     continue
-
-                # Count co-occurrences
-                pair_counts = {}
-                for seq in high_fit_seqs:
+                pair_counts: Dict[Tuple[str, str], int] = {}
+                for seq in template_seqs:
                     if len(seq) > max(pos_i, pos_j):
                         pair = (seq[pos_i], seq[pos_j])
                         pair_counts[pair] = pair_counts.get(pair, 0) + 1
-
                 if pair_counts:
                     total = sum(pair_counts.values())
                     max_count = max(pair_counts.values())
                     ld = max_count / total
                     ld_matrix[i, j] = ld
                     ld_matrix[j, i] = ld
-
         return ld_matrix
+
+    def update_with_observations(
+        self,
+        observed_indices: np.ndarray,
+        observed_fitness: np.ndarray,
+        top_pct: float = 0.5,
+    ) -> None:
+        """
+        Refit templates from the set of *queried* sequences and their *observed*
+        fitness. Combines:
+          - top-`top_pct` of observations by observed fitness (fitness-informed
+            but label-free w.r.t. unqueried sequences — fully legitimate in an
+            iterative campaign);
+          - the structure-only wildtype neighborhood (Hamming ≤ 2 from WT).
+        Then recomputes `freq_data`, `ld_matrix`, and `all_scores`.
+        """
+        observed_indices = np.asarray(observed_indices, dtype=int)
+        observed_fitness = np.asarray(observed_fitness, dtype=float)
+        self._observed_seqs = [self.sequences[i] for i in observed_indices]
+        self._observed_fitness = observed_fitness
+
+        # Top observations by observed fitness
+        if len(self._observed_seqs) >= 2:
+            n_top = max(1, int(np.ceil(len(self._observed_seqs) * top_pct)))
+            top_order = np.argsort(observed_fitness)[::-1][:n_top]
+            top_obs = [self._observed_seqs[i] for i in top_order]
+        else:
+            top_obs = list(self._observed_seqs)
+
+        # Combine with structural templates (wildtype neighborhood)
+        struct_tmpl = self._structural_templates()
+        template_seqs = top_obs + struct_tmpl
+
+        self.freq_data = self._compute_frequencies_from_seqs(template_seqs)
+        # LD is computed from top observations only — structural templates
+        # are dominated by WT, which would saturate LD.
+        self.ld_matrix = self._compute_ld_matrix_from_seqs(top_obs)
+        self._precompute_scores()
 
     def _precompute_scores(self) -> None:
         """Precompute scores for all sequences for efficiency."""
@@ -519,15 +546,29 @@ def load_dataset(data_dir: str, dataset: str) -> Tuple[List[str], np.ndarray, pd
         raise ValueError(f"No sequence column ('seq' or 'sequence') found in {data_path}")
 
     # Get fitness values
-    fitness = df['fitness'].values
+    if 'fitness' not in df.columns and 'blue' in df.columns and 'red' in df.columns:
+        # Multi-objective ("*_joint") dataset: scalarize to geometric mean
+        blue = df['blue'].values.astype(float)
+        red = df['red'].values.astype(float)
+        fitness = np.sqrt(np.clip(blue, 0, None) * np.clip(red, 0, None))
+    else:
+        fitness = df['fitness'].values
 
     # Auto-detect sequence length from the data (use mode of lengths)
     seq_lengths = [len(s) for s in sequences]
     seq_length = max(set(seq_lengths), key=seq_lengths.count)
 
-    # Wildtype fallback: sequence with the highest fitness
-    best_idx = int(np.argmax(fitness))
-    wildtype = sequences[best_idx]
+    # Wildtype: prefer the n_muts==0 row (natural wildtype) when present.
+    # Falling back to argmax(fitness) is LEAKY for AiCE — the scorer biases
+    # templates toward wildtype-neighbors, which would then be biased toward
+    # the global-max sequence.
+    if 'n_muts' in df.columns and (df['n_muts'] == 0).any():
+        wt_idx = int(df.index[df['n_muts'] == 0][0])
+        wildtype = sequences[wt_idx]
+    else:
+        print(f"WARNING: no n_muts==0 row in {dataset}; falling back to argmax(fitness) "
+              f"as wildtype, which is LEAKY for AiCE.")
+        wildtype = sequences[int(np.argmax(fitness))]
 
     # Normalize fitness to [0, 1]
     fitness_min = fitness.min()
@@ -584,12 +625,13 @@ def run_single_experiment(
     Returns:
         Dictionary containing results and metrics
     """
-    # Configuration: 96 variants per round, 15 rounds total
+    # Configuration: 96 variants per round, 5 rounds total — matches the
+    # benchmark-wide budget used by ALDE, CLADE, FLEXS, etc.
     batch_size = 96
-    n_rounds = 15
+    n_rounds = 5
     n_init = batch_size  # First round
-    budget = batch_size * (n_rounds - 1)  # Remaining 14 rounds
-    total_samples = n_init + budget  # 96 * 15 = 1440
+    budget = batch_size * (n_rounds - 1)  # Remaining 4 rounds
+    total_samples = n_init + budget  # 96 * 5 = 480
 
     if run_id is None:
         run_id = seed
@@ -621,11 +663,13 @@ def run_single_experiment(
     if verbose >= 1:
         print(f"Loaded {len(all_sequences)} sequences")
         print(f"Sequence length (detected): {seq_length}")
-        print(f"Wildtype (highest fitness): {wildtype[:50]}{'...' if len(wildtype) > 50 else ''}")
+        print(f"Wildtype: {wildtype[:50]}{'...' if len(wildtype) > 50 else ''}")
         print(f"Fitness range: [{global_min:.4f}, {global_max:.4f}]")
 
-    # Initialize AiCE scorer
-    print("Initializing AiCE scorer...")
+    # Initialize AiCE scorer. Templates start from the structure-only WT
+    # neighborhood; observed fitness is folded in via update_with_observations
+    # after each round (proper iterative MLDE, no landscape-fitness leak).
+    print("Initializing AiCE scorer (structure-only templates; no fitness leak)...")
     scorer = AiCEScorer(all_sequences, all_fitness, aice_config, wildtype=wildtype)
 
     # Create output directory
@@ -640,6 +684,12 @@ def run_single_experiment(
     # Track all queries
     queried_indices = list(initial_indices)
     queried_set = set(queried_indices)
+
+    # Fold the initial random observations into the scorer before round 1.
+    scorer.update_with_observations(
+        np.asarray(queried_indices, dtype=int),
+        all_fitness[np.asarray(queried_indices, dtype=int)],
+    )
 
     # Iterative selection using AiCE scores
     start_time = datetime.now()
@@ -657,6 +707,12 @@ def run_single_experiment(
 
         queried_indices.extend(batch_indices)
         queried_set.update(batch_indices)
+
+        # Refit the scorer using all observations so far.
+        scorer.update_with_observations(
+            np.asarray(queried_indices, dtype=int),
+            all_fitness[np.asarray(queried_indices, dtype=int)],
+        )
 
         if verbose >= 2:
             batch_fitness = all_fitness[batch_indices]
@@ -707,6 +763,9 @@ def run_single_experiment(
         queried_fitness = all_fitness[queried_indices]
 
         metrics = MetricsResult()
+
+        # Record per-query indices for post-hoc multi-objective analysis on _joint datasets
+        metrics.queried_indices = [int(i) for i in queried_indices]
 
         # Exploration metrics
         metrics.high_fitness_proximity = high_fitness_proximity(

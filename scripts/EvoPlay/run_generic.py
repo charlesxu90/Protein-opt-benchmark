@@ -858,13 +858,17 @@ def load_dataset_data(dataset: str, data_dir: str = None) -> Tuple[np.ndarray, n
 
     fitness_df = pd.read_csv(data_path)
 
-    # Support both 'seq' and 'sequence' column names
-    if 'seq' in fitness_df.columns:
+    # Prefer AACombo (short combinatorial form) when present, fall back to seq / sequence
+    if 'AACombo' in fitness_df.columns:
+        sequences = fitness_df['AACombo'].tolist()
+    elif 'Combo' in fitness_df.columns:
+        sequences = fitness_df['Combo'].tolist()
+    elif 'seq' in fitness_df.columns:
         sequences = fitness_df['seq'].tolist()
     elif 'sequence' in fitness_df.columns:
         sequences = fitness_df['sequence'].tolist()
     else:
-        raise ValueError(f"Data CSV must have a 'seq' or 'sequence' column. Found: {list(fitness_df.columns)}")
+        raise ValueError(f"Data CSV must have a 'seq', 'sequence', or 'AACombo' column. Found: {list(fitness_df.columns)}")
 
     fitness = fitness_df['fitness'].values
 
@@ -1594,7 +1598,11 @@ Examples:
     data_path = os.path.join(args.data_dir, dataset, 'data.csv')
     if os.path.exists(data_path):
         probe_df = pd.read_csv(data_path, nrows=1)
-        col = 'seq' if 'seq' in probe_df.columns else 'sequence' if 'sequence' in probe_df.columns else None
+        col = ('AACombo' if 'AACombo' in probe_df.columns
+               else 'Combo' if 'Combo' in probe_df.columns
+               else 'seq' if 'seq' in probe_df.columns
+               else 'sequence' if 'sequence' in probe_df.columns
+               else None)
         if col:
             probe_seq_len = len(probe_df[col].iloc[0])
         else:

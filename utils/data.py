@@ -142,6 +142,13 @@ def load_csv_data(
     """
     Load sequences and fitness values from a CSV file.
 
+    For multi-objective ("*_joint") datasets that expose `blue` and `red`
+    columns (and no `fitness` column), the returned fitness is the
+    geometric mean sqrt(blue * red). This scalarization rewards Pareto-
+    optimal sequences (high in both channels) and penalizes imbalanced
+    ones. Raw per-objective values are recoverable via
+    `load_joint_objectives`.
+
     Parameters
     ----------
     filepath : str or Path
@@ -178,7 +185,13 @@ def load_csv_data(
                 )
 
         sequences = df[sequence_col].tolist()
-        fitness = df[fitness_col].values.astype(float)
+        if fitness_col not in df.columns and 'blue' in df.columns and 'red' in df.columns:
+            blue = df['blue'].values.astype(float)
+            red = df['red'].values.astype(float)
+            # Geometric mean, clipped at 0 so negative-valued joints stay finite
+            fitness = np.sqrt(np.clip(blue, 0, None) * np.clip(red, 0, None))
+        else:
+            fitness = df[fitness_col].values.astype(float)
     else:
         # Fallback without pandas
         sequences = []
@@ -207,6 +220,41 @@ def load_csv_data(
         fitness = np.array(fitness)
 
     return sequences, fitness
+
+
+def load_joint_objectives(
+    dataset: str,
+    data_dir: Optional[Union[str, Path]] = None,
+) -> Tuple[List[str], np.ndarray, np.ndarray]:
+    """
+    Load a multi-objective ("*_joint") dataset's raw per-objective values.
+
+    Use this for post-hoc Pareto / hypervolume analysis on trajectories
+    that methods produced under the scalarized objective.
+
+    Parameters
+    ----------
+    dataset : str
+        Joint dataset name (e.g. 'eqFP611_joint', 'mTagBFP2_joint')
+    data_dir : str or Path, optional
+
+    Returns
+    -------
+    Tuple[List[str], np.ndarray, np.ndarray]
+        (sequences, blue, red) arrays aligned by index.
+    """
+    if data_dir is None:
+        data_dir = DEFAULT_DATA_DIR
+    data_dir = Path(data_dir)
+    path = data_dir / dataset / 'data.csv'
+    if not path.exists():
+        raise FileNotFoundError(f"No data.csv at {path}")
+    df = pd.read_csv(path)
+    seq_col = next((c for c in ['seq', 'sequence', 'AACombo', 'Combo', 'variant']
+                    if c in df.columns), None)
+    if seq_col is None or 'blue' not in df.columns or 'red' not in df.columns:
+        raise ValueError(f"{path} does not look like a joint dataset (need seq + blue + red)")
+    return df[seq_col].tolist(), df['blue'].values.astype(float), df['red'].values.astype(float)
 
 
 def load_initial_training_set(

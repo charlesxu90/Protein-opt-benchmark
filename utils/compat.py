@@ -106,9 +106,13 @@ class MetricsResult:
     regret_trajectory: List[float] = field(default_factory=list)
     fitness_trajectory: List[float] = field(default_factory=list)
 
+    # Per-query indices into the landscape (needed for post-hoc multi-objective
+    # analysis on *_joint datasets; harmless overhead for single-objective).
+    queried_indices: List[int] = field(default_factory=list)
+
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
-        return {
+        out = {
             'high_fitness_proximity': self.high_fitness_proximity,
             'novelty': self.novelty,
             'batch_diversity': self.batch_diversity,
@@ -125,6 +129,9 @@ class MetricsResult:
             'auoc': self.auoc,
             'hit_rate': self.hit_rate_value,
         }
+        if self.queried_indices:
+            out['queried_indices'] = list(self.queried_indices)
+        return out
 
 
 # =============================================================================
@@ -379,6 +386,9 @@ def compute_all_metrics(
 
     queried_indices = np.array(queried_indices).astype(int)
     initial_indices = np.array(initial_indices).astype(int)
+
+    # Record for post-hoc multi-objective analysis
+    result.queried_indices = [int(x) for x in queried_indices]
 
     # Get sequences and fitness
     queried_seqs = [all_sequences[i] for i in queried_indices]

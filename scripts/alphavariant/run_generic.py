@@ -114,7 +114,12 @@ def auto_detect_from_data(data_path: str) -> Dict[str, Any]:
         - n_variants: total number of variants
     """
     df = pd.read_csv(data_path)
-    sequences = df['seq'].tolist()
+    # Prefer AACombo (short combinatorial form) when present
+    _seq_col = ('AACombo' if 'AACombo' in df.columns
+                else 'Combo' if 'Combo' in df.columns
+                else 'seq' if 'seq' in df.columns
+                else 'sequence')
+    sequences = df[_seq_col].tolist()
     fitness = df['fitness'].values
 
     # Detect sequence length (use mode for variable-length datasets)
@@ -374,12 +379,18 @@ class IterativeProteinTrainer:
         """Load the complete fitness landscape."""
         df = pd.read_csv(self.landscape_path)
 
+        # Prefer AACombo (short combinatorial form) when present
+        _seq_col = ('AACombo' if 'AACombo' in df.columns
+                    else 'Combo' if 'Combo' in df.columns
+                    else 'seq' if 'seq' in df.columns
+                    else 'sequence')
+
         self.seq_to_fitness = {}
         self.all_seqs = []
         self.all_fitness = []
 
         for _, row in df.iterrows():
-            seq = row['seq']
+            seq = row[_seq_col]
             fitness = row['fitness']
             self.seq_to_fitness[seq] = fitness
             self.all_seqs.append(seq)
@@ -1173,7 +1184,12 @@ class IterativeProteinTrainer:
 def load_landscape_data_local(data_path: str) -> Tuple[List[str], np.ndarray]:
     """Load complete fitness landscape."""
     df = pd.read_csv(data_path)
-    sequences = df['seq'].tolist()
+    # Prefer AACombo (short combinatorial form) when present
+    _seq_col = ('AACombo' if 'AACombo' in df.columns
+                else 'Combo' if 'Combo' in df.columns
+                else 'seq' if 'seq' in df.columns
+                else 'sequence')
+    sequences = df[_seq_col].tolist()
     fitness = df['fitness'].values
     return sequences, fitness
 

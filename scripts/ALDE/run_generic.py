@@ -89,7 +89,13 @@ class DatasetObjective:
         """
         df = pd.read_csv(data_path)
         sequences = df[sequence_col].tolist()
-        fitness_raw = df[fitness_col].values
+        if fitness_col not in df.columns and 'blue' in df.columns and 'red' in df.columns:
+            # Multi-objective ("*_joint") dataset: scalarize to geometric mean
+            blue = df['blue'].values.astype(float)
+            red = df['red'].values.astype(float)
+            fitness_raw = np.sqrt(np.clip(blue, 0, None) * np.clip(red, 0, None))
+        else:
+            fitness_raw = df[fitness_col].values
 
         self.sequences = sequences
         self.seq_length = len(sequences[0])

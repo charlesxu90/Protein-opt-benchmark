@@ -109,9 +109,22 @@ class GenericLandscape(flexs.Landscape):
         self.data = pd.read_csv(data_path)
         self.dataset = dataset
 
-        # Build sequence -> fitness lookup using full sequence
-        self.sequences = self.data['seq'].tolist()
-        self.fitness_raw = self.data['fitness'].values
+        # Prefer AACombo (short combinatorial form) when present, fall back to full seq
+        if 'AACombo' in self.data.columns:
+            self.sequences = self.data['AACombo'].tolist()
+        elif 'Combo' in self.data.columns:
+            self.sequences = self.data['Combo'].tolist()
+        elif 'seq' in self.data.columns:
+            self.sequences = self.data['seq'].tolist()
+        else:
+            self.sequences = self.data['sequence'].tolist()
+        if 'fitness' not in self.data.columns and 'blue' in self.data.columns and 'red' in self.data.columns:
+            # Multi-objective ("*_joint") dataset: scalarize to geometric mean
+            blue = self.data['blue'].values.astype(float)
+            red = self.data['red'].values.astype(float)
+            self.fitness_raw = np.sqrt(np.clip(blue, 0, None) * np.clip(red, 0, None))
+        else:
+            self.fitness_raw = self.data['fitness'].values
 
         if normalize:
             self.fitness = (self.fitness_raw - np.min(self.fitness_raw)) / (np.max(self.fitness_raw) - np.min(self.fitness_raw))
@@ -179,6 +192,10 @@ def compute_metrics(
     # Get queried sequences and fitness
     queried_seqs = results_df['sequence'].tolist()
     queried_fitness = results_df['true_score'].values
+
+    # Record per-query indices for post-hoc multi-objective analysis on _joint datasets
+    seq_to_idx = {s: i for i, s in enumerate(all_sequences)}
+    result.queried_indices = [int(seq_to_idx[s]) for s in queried_seqs if s in seq_to_idx]
 
     # Initial sequences (round 0)
     initial_seqs = results_df[results_df['round'] == 0]['sequence'].tolist()
@@ -320,7 +337,10 @@ def run_single_experiment(
     subdir = os.path.join(output_path, dataset, "")
     os.makedirs(subdir, exist_ok=True)
 
-    # Create CNN Ensemble model
+    # Create CNN Ensemble model. CNN's first Conv1D uses padding='valid', so
+    # kernel_size must be <= seq_len. Default kernel is 5; shrink for short
+    # combinatorial sequences (e.g., 4-AA AACombo).
+    cnn_kernel = min(3, seq_length) if seq_length < 5 else 5
     ensemble_models = [
         baselines.models.CNN(
             seq_len=seq_length,
@@ -328,7 +348,8 @@ def run_single_experiment(
             hidden_size=100,
             alphabet=alphabet,
             loss='MSE',
-            epochs=20
+            epochs=20,
+            kernel_size=cnn_kernel,
         )
         for _ in range(5)
     ]

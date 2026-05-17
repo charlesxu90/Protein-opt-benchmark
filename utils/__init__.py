@@ -52,6 +52,7 @@ from .metrics import (
 from .evaluator import BenchmarkEvaluator
 from .data import (
     load_landscape_data,
+    load_joint_objectives,
     load_initial_training_set,
     get_top_fitness_sequences,
     get_global_maximum,
@@ -138,6 +139,7 @@ __all__ = [
 
     # Data utilities
     'load_landscape_data',
+    'load_joint_objectives',
     'load_initial_training_set',
     'get_top_fitness_sequences',
     'get_global_maximum',

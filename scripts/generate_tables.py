@@ -50,14 +50,16 @@ ALL_METHODS = [
     # Established
     'ALDE', 'EvoPlay', 'LatProtRL', 'FLEXS', 'AiCE', 'delta_cs',
     'AlphaVariant', 'Random', 'GreedyWalk',
-    # Phase 2.1 baselines (scaffolding; not yet runnable)
-    'EVOLVEpro', 'ftMLDE', 'MULTIevolve',
+    # Phase 2.1 baselines (now runnable)
+    'EVOLVEpro', 'ftMLDE', 'CLADE', 'MULTIevolve',
 ]
 ALL_DATASETS = [
     # Original
     'GB1', 'AAV_med', 'AAV_hard', 'GFP_med', 'GFP_hard',
     # Phase 1.2 additions (CombinGym)
     'CR9114', 'CreiLOV', 'eqFP611_blue', 'eqFP611_red',
+    '4site_GB1', 'TRPB', 'PAB1', '4site_PhoQ', '4site_TEV',
+    'mTagBFP2_blue', 'mTagBFP2_red',
     # Phase 1.2 additions (ProteinGym; populated by prepare_proteingym.py)
     'BLAT_ECOLX', 'CALM1_HUMAN', 'GFP_AEQVI', 'DYR_ECOLI',
     'AMIE_PSEAE', 'KKA2_KLEPN', 'MK01_HUMAN', 'HIS7_YEAST',
@@ -139,8 +141,47 @@ def _extract_seed_from_path(p: Path) -> int:
     return -1
 
 
+# Per-dataset normalization for any method that stores raw fitness values.
+# Mirrors GLOBAL_MAX in scripts/aggregate_metrics.py.
+_GLOBAL_MAX = {
+    "GB1": 8.762, "4site_GB1": 8.762, "CR9114": 9.835, "CreiLOV": 15686.305,
+    "TRPB": 1.0, "AAV_med": 1.0, "AAV_hard": 1.0, "GFP_med": 1.0,
+    "GFP_hard": 1.561, "eqFP611_blue": 1.6077, "eqFP611_red": 1.6924,
+    "mTagBFP2_blue": 1.6077, "mTagBFP2_red": 1.6924,
+    "PAB1": 2.6279, "4site_PhoQ": 133.5943, "4site_TEV": 1.0,
+}
+
+
+def _maybe_normalize(m: Dict, dataset: Optional[str], path: Optional[Path] = None) -> Dict:
+    """Rescale raw max_fitness/simple_regret to [0, 1] when needed.
+
+    Two cases:
+      1) High-GLOBAL_MAX datasets (e.g., CreiLOV with g=15686): raw values
+         are >> 1.5; the >1.5 sentinel detects them reliably.
+      2) Low-GLOBAL_MAX datasets (e.g., eqFP611_red with g=1.69): raw values
+         can be < 1.5 even though unnormalized. We force-normalize files
+         under FLEXS/results/, which stores raw fitness regardless of scale.
+    """
+    if dataset is None:
+        return m
+    g = _GLOBAL_MAX.get(dataset)
+    if g is None:
+        return m
+    mf = m.get('max_fitness')
+    if not isinstance(mf, (int, float)):
+        return m
+    is_flexs = path is not None and '/FLEXS/' in str(path)
+    if mf > 1.5 or (is_flexs and g != 1.0):
+        m['max_fitness'] = float(mf) / g
+        sr = m.get('simple_regret')
+        if isinstance(sr, (int, float)):
+            m['simple_regret'] = float(sr) / g
+    return m
+
+
 def load_metrics_from_files(files: List[Path],
-                            allowed_seeds: Optional[set] = None
+                            allowed_seeds: Optional[set] = None,
+                            dataset: Optional[str] = None,
                             ) -> List[Dict]:
     """Load metrics from a list of JSON files.
 
@@ -184,6 +225,7 @@ def load_metrics_from_files(files: List[Path],
                 m = data
             if m is not None:
                 m = dict(m)
+                m = _maybe_normalize(m, dataset, fpath)
                 m["_seed"] = seed
                 if seed >= 0:
                     metrics_by_seed[seed] = m
@@ -239,7 +281,7 @@ def collect_all_results(
         for dataset in datasets:
             files = find_result_files(base_dir, method, dataset)
             if files:
-                metrics_list = load_metrics_from_files(files, allowed_seeds)
+                metrics_list = load_metrics_from_files(files, allowed_seeds, dataset=dataset)
                 if metrics_list:
                     agg = aggregate_metrics(metrics_list)
                     results[(method, dataset)] = {
