@@ -127,6 +127,9 @@ class BayesianOptimization:
         # normalize encoding to be between 0 and 1
         if disc_X is not None:
             self.disc_X = botorch.utils.transforms.normalize(disc_X, self.domain)
+            # See note on queries_x below: constant columns produce 0/0=NaN
+            # and silently poison every downstream prediction.
+            self.disc_X = torch.nan_to_num(self.disc_X, nan=0.0)
         self.disc_y = disc_y
         self.obj_max = torch.max(disc_y).double()
         self.verbose = verbose
@@ -146,6 +149,12 @@ class BayesianOptimization:
             self.queries_y = queries_y #keeps track of the labels for queried samples
             logger.info(f'Num prev. inputs: {queries_x.size(0)}')
             self.queries_x = botorch.utils.transforms.normalize(self.queries_x, domain)
+            # botorch.normalize emits NaN for any feature with upper==lower
+            # (constant columns), which is common with one-hot encodings of
+            # combinatorial libraries where most positions don't vary. Those
+            # NaNs then propagate through DNN training and produce NaN model
+            # predictions, causing argmax to silently return 0. Replace with 0.
+            self.queries_x = torch.nan_to_num(self.queries_x, nan=0.0)
         self.indices = indices #keeps track of the indices for queried samples, based on the compelte dataset
 
         # set up noise func

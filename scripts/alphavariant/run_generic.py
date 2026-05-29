@@ -100,6 +100,41 @@ ALL_20_AAS = list(AMINO_ACIDS)
 
 
 # =============================================================================
+# Dataset helpers (multi-objective scalarization + wildtype resolution)
+# =============================================================================
+
+def _scalarized_fitness(df: 'pd.DataFrame') -> np.ndarray:
+    """Return the per-row fitness array, scalarizing blue+red for *_joint datasets."""
+    if 'fitness' in df.columns:
+        return df['fitness'].values.astype(float)
+    if 'blue' in df.columns and 'red' in df.columns:
+        b = df['blue'].values.astype(float)
+        r = df['red'].values.astype(float)
+        return np.sqrt(np.clip(b, 0, None) * np.clip(r, 0, None))
+    raise ValueError(f"No fitness column and no (blue, red) pair in dataframe; cols={df.columns.tolist()}")
+
+
+def _resolve_wildtype(dataset_dir: str, df: 'pd.DataFrame',
+                      sequences: List[str], fitness: np.ndarray) -> str:
+    """Resolve WT non-leakily: wt.fasta -> n_muts==0 -> argmax(fitness) (warning)."""
+    wt_fasta = os.path.join(dataset_dir, "wt.fasta")
+    if os.path.exists(wt_fasta):
+        with open(wt_fasta) as fh:
+            lines = [ln.strip() for ln in fh if ln.strip() and not ln.startswith('>')]
+        if lines:
+            return "".join(lines)
+    if 'n_muts' in df.columns and (df['n_muts'] == 0).any():
+        wt_idx = int(df.index[df['n_muts'] == 0][0])
+        return sequences[wt_idx]
+    logger.warning(
+        f"No wt.fasta or n_muts==0 row in {dataset_dir}; falling back to "
+        f"argmax(fitness) as wildtype — LEAKY for methods that bias toward "
+        f"the WT neighborhood."
+    )
+    return sequences[int(np.argmax(fitness))]
+
+
+# =============================================================================
 # Auto-config generation
 # =============================================================================
 
@@ -120,22 +155,25 @@ def auto_detect_from_data(data_path: str) -> Dict[str, Any]:
                 else 'seq' if 'seq' in df.columns
                 else 'sequence')
     sequences = df[_seq_col].tolist()
-    fitness = df['fitness'].values
+    fitness = _scalarized_fitness(df)
 
     # Detect sequence length (use mode for variable-length datasets)
     lengths = [len(s) for s in sequences]
     seq_len = int(pd.Series(lengths).mode().iloc[0])
 
-    # Use highest-fitness sequence as wildtype fallback
-    best_idx = int(np.argmax(fitness))
-    wildtype = sequences[best_idx]
-    wildtype_fitness = float(fitness[best_idx])
+    # Wildtype resolution: prefer wt.fasta (authoritative), then n_muts==0,
+    # then argmax(fitness) with warning. argmax is a fitness leak for methods
+    # that bias toward the WT or its neighborhood.
+    dataset_dir = os.path.dirname(data_path)
+    wildtype = _resolve_wildtype(dataset_dir, df, sequences, fitness)
+    best_idx = sequences.index(wildtype) if wildtype in sequences else int(np.argmax(fitness))
+    wildtype_fitness = float(fitness[best_idx]) if best_idx < len(fitness) else 0.0
 
     logger.info(f"Auto-detected from {data_path}:")
     logger.info(f"  Sequence length (mode): {seq_len}")
     logger.info(f"  Number of variants: {len(sequences)}")
     logger.info(f"  Fitness range: [{fitness.min():.4f}, {fitness.max():.4f}]")
-    logger.info(f"  Wildtype (best fitness): {wildtype[:40]}{'...' if len(wildtype) > 40 else ''} "
+    logger.info(f"  Wildtype: {wildtype[:40]}{'...' if len(wildtype) > 40 else ''} "
                 f"(fitness={wildtype_fitness:.4f})")
 
     return {
@@ -257,18 +295,48 @@ def create_temp_fasta(wildtype: str, output_dir: str) -> str:
     return fasta_path
 
 
-def create_temp_hotspots(seq_len: int, output_dir: str) -> str:
-    """Create a temporary hotspots CSV with all positions and all 20 AAs."""
+def create_temp_hotspots(seq_len: int, output_dir: str,
+                         sequences: Optional[List[str]] = None) -> str:
+    """Create a hotspots CSV defining the GPT search space.
+
+    When `sequences` is provided, derive per-position AA candidates from the
+    library itself (positions with >1 observed AA) — this constrains the
+    GPT decoder to the actual combinatorial subspace (e.g. 2^13 = 8192 for
+    eqFP611_joint, 20^4 for the 4site_* datasets). Without this, the default
+    of "all positions × all 20 AAs" lets the GPT propose 20^L sequences,
+    almost none of which exist in the library, and the agent never proposes
+    a novel in-library candidate.
+    """
     hotspot_path = os.path.join(output_dir, 'hotspots.csv')
     os.makedirs(os.path.dirname(hotspot_path), exist_ok=True)
     rows = []
-    aa_list_str = repr(ALL_20_AAS)
-    for pos in range(1, seq_len + 1):
-        rows.append(f'{pos},"{aa_list_str}"')
+    if sequences:
+        for pos in range(seq_len):
+            aas = sorted({s[pos] for s in sequences if len(s) > pos})
+            if len(aas) > 1:
+                rows.append(f'{pos+1},"{aas}"')  # hotspots file is 1-indexed
+        if not rows:
+            logger.warning("No varying positions detected; falling back to all-20-AA template")
+            aa_list_str = repr(ALL_20_AAS)
+            rows = [f'{p},"{aa_list_str}"' for p in range(1, seq_len + 1)]
+    else:
+        aa_list_str = repr(ALL_20_AAS)
+        rows = [f'{p},"{aa_list_str}"' for p in range(1, seq_len + 1)]
     with open(hotspot_path, 'w') as f:
         f.write("pos,mut_aas\n")
         f.write("\n".join(rows) + "\n")
+    logger.info(f"Wrote hotspots: {len(rows)} positions -> {hotspot_path}")
     return hotspot_path
+
+
+# ============================================================================
+# CNN surrogate helper modules
+# ============================================================================
+
+class _Permute201(torch.nn.Module):
+    """Permute (B, L, V) -> (B, V, L) inside an nn.Sequential."""
+    def forward(self, x):
+        return x.permute(0, 2, 1)
 
 
 # ============================================================================
@@ -314,6 +382,12 @@ class IterativeProteinTrainer:
         n_finetune_epochs: int = 10,
         finetune_lr: float = 1e-4,
         level: str = 'medium',
+        surrogate_kind: str = 'ensemble',
+        prior_model_path: Optional[str] = None,
+        constrain_alphabet: bool = False,
+        features_kind: str = 'onehot',
+        wt_seq: Optional[str] = None,
+        n_gpt_ensemble: int = 1,
     ):
         """Initialize iterative trainer."""
         self.model_config = model_config
@@ -337,6 +411,13 @@ class IterativeProteinTrainer:
         self.n_finetune_epochs = n_finetune_epochs
         self.finetune_lr = finetune_lr
         self.level = level
+        self.surrogate_kind = surrogate_kind
+        self.prior_model_path = prior_model_path
+        self.constrain_alphabet = constrain_alphabet
+        self.features_kind = features_kind
+        self.wt_seq = wt_seq
+        self._esm_extractor = None
+        self.n_gpt_ensemble = n_gpt_ensemble
 
         self.sd = AASeqDictionary()
         set_random_seed(seed)
@@ -386,22 +467,27 @@ class IterativeProteinTrainer:
                     else 'sequence')
 
         self.seq_to_fitness = {}
-        self.all_seqs = []
-        self.all_fitness = []
-
-        for _, row in df.iterrows():
-            seq = row[_seq_col]
-            fitness = row['fitness']
-            self.seq_to_fitness[seq] = fitness
-            self.all_seqs.append(seq)
-            self.all_fitness.append(fitness)
-
-        self.all_fitness = np.array(self.all_fitness)
+        self.all_seqs = df[_seq_col].tolist()
+        # Vectorized scalarization handles both single-objective ('fitness') and
+        # multi-objective (*_joint with 'blue' + 'red') datasets.
+        fitness_arr = _scalarized_fitness(df)
+        for seq, fit in zip(self.all_seqs, fitness_arr):
+            self.seq_to_fitness[seq] = float(fit)
+        self.all_fitness = np.asarray(fitness_arr, dtype=float)
         self.max_fitness_raw = np.max(self.all_fitness)
         self.min_fitness_raw = np.min(self.all_fitness)
 
+        # Per-position observed alphabet (for constrain_alphabet filter)
+        seq_len = len(self.all_seqs[0])
+        self.per_position_alphabets: List[set] = []
+        for p in range(seq_len):
+            self.per_position_alphabets.append({s[p] for s in self.all_seqs if len(s) > p})
+        self.varying_positions = [p for p, aas in enumerate(self.per_position_alphabets) if len(aas) > 1]
+
         logger.info(f"Loaded {len(self.all_seqs)} variants from landscape")
         logger.info(f"Fitness range: [{self.min_fitness_raw:.4f}, {self.max_fitness_raw:.4f}]")
+        logger.info(f"Varying positions: {len(self.varying_positions)} / {seq_len}; "
+                    f"per-position alphabet sizes: {[len(a) for a in self.per_position_alphabets]}")
 
     def _get_ground_truth_fitness(self, seqs: List[str]) -> np.ndarray:
         """Get ground truth fitness for sequences."""
@@ -417,13 +503,16 @@ class IterativeProteinTrainer:
     def _sample_initial_seqs(self, n_samples: int, exclude: set = None) -> List[str]:
         """
         Sample initial sequences from a fitness region based on level.
-        - medium: 40th-60th percentile
-        - hard: bottom 20th percentile
+        - uniform: uniformly random across the whole landscape (matches Random/ALDE/FLEXS/etc.)
+        - medium:  40th-60th percentile
+        - hard:    bottom 20th percentile
         """
         if exclude is None:
             exclude = set()
 
-        if self.level == 'medium':
+        if self.level == 'uniform':
+            mask = np.ones(len(self.all_fitness), dtype=bool)
+        elif self.level == 'medium':
             threshold_low = np.percentile(self.all_fitness, 40)
             threshold_high = np.percentile(self.all_fitness, 60)
             mask = (self.all_fitness >= threshold_low) & (self.all_fitness <= threshold_high)
@@ -448,7 +537,9 @@ class IterativeProteinTrainer:
         if exclude is None:
             exclude = set()
 
-        if self.level == 'medium':
+        if self.level == 'uniform':
+            mask = np.ones(len(self.all_fitness), dtype=bool)
+        elif self.level == 'medium':
             threshold_low = np.percentile(self.all_fitness, 40)
             threshold_high = np.percentile(self.all_fitness, 60)
             mask = (self.all_fitness >= threshold_low) & (self.all_fitness <= threshold_high)
@@ -513,16 +604,48 @@ class IterativeProteinTrainer:
         return selected_seqs
 
     def _create_models(self):
-        """Create fresh GPT models."""
-        mconf = GPTConfig(
-            vocab_size=self.model_config.vocab_size,
-            block_size=self.model_config.block_size,
-            n_layer=self.model_config.n_layer,
-            n_head=self.model_config.n_head,
-            n_embd=self.model_config.n_embd,
-        )
-        self.prior_model = GPT(mconf).to(self.device)
-        self.agent_model = copy.deepcopy(self.prior_model)
+        """Create GPT models. Optionally load a pretrained MSA-prior."""
+        if self.prior_model_path is not None and os.path.exists(self.prior_model_path):
+            # Load pretrained prior (trained on a family MSA via train_prior).
+            # The agent is initialized as a copy of the prior, then fine-tuned
+            # via REINFORCE on the surrogate's predictions.
+            #
+            # We load the state_dict directly with map_location=self.device so
+            # the weights never live on CPU first. The CPU->GPU transfer step
+            # via .to(device) triggers a NVML init in PyTorch 2.x that fails
+            # on hosts where the NVML userland and kernel versions don't
+            # match, even though the rest of CUDA works.
+            from popgen.model.gpt import GPTConfig as _GPTConfig
+            from pathlib import Path
+            import json as _json
+            cfg_path = Path(self.prior_model_path).with_suffix('.json')
+            with open(cfg_path) as fh:
+                mconf = _GPTConfig(**_json.load(fh))
+            # Build prior on the target device and load weights via the
+            # standard load_state_dict path. Loading to CPU first and then
+            # doing param.copy_() can leave the caching allocator in a state
+            # that triggers an NVML init assert mid-run; the standard
+            # load_state_dict goes through the same code path as the random
+            # init's `.to(device)` call, which is known to work on this host.
+            self.prior_model = GPT(mconf).to(self.device)
+            _ckpt = torch.load(self.prior_model_path, map_location=self.device)
+            _sd = _ckpt['model'] if isinstance(_ckpt, dict) and 'model' in _ckpt else _ckpt
+            self.prior_model.load_state_dict(_sd)
+            # Agent = exact copy of the loaded prior. Use copy.deepcopy on
+            # the device-resident prior_model, matching the random-init code
+            # path that's known to work on this host.
+            self.agent_model = copy.deepcopy(self.prior_model)
+            logger.info(f"Loaded MSA-pretrained prior from {self.prior_model_path}")
+        else:
+            mconf = GPTConfig(
+                vocab_size=self.model_config.vocab_size,
+                block_size=self.model_config.block_size,
+                n_layer=self.model_config.n_layer,
+                n_head=self.model_config.n_head,
+                n_embd=self.model_config.n_embd,
+            )
+            self.prior_model = GPT(mconf).to(self.device)
+            self.agent_model = copy.deepcopy(self.prior_model)
 
         for param in self.prior_model.parameters():
             param.requires_grad = False
@@ -621,17 +744,202 @@ class IterativeProteinTrainer:
 
         logger.info(f"Prior finetuning complete. Final loss: {loss.item():.4f}")
 
+    # ---- Per-position alphabet filter (FLEXS-style) -----------------------
+
+    def _is_on_alphabet(self, seq: str) -> bool:
+        """True if every position's AA is in the observed per-position alphabet."""
+        if not hasattr(self, 'per_position_alphabets') or not self.per_position_alphabets:
+            return True
+        if len(seq) != len(self.per_position_alphabets):
+            return False
+        return all(seq[p] in self.per_position_alphabets[p] for p in range(len(seq)))
+
+    def _filter_on_alphabet(self, seqs, scores=None):
+        """Drop sequences whose AAs violate observed per-position alphabets."""
+        if not self.constrain_alphabet:
+            return (seqs, scores) if scores is not None else seqs
+        keep_idx = [i for i, s in enumerate(seqs) if self._is_on_alphabet(s)]
+        kept_seqs = [seqs[i] for i in keep_idx]
+        if scores is not None:
+            kept_scores = np.asarray(scores)[keep_idx]
+            return kept_seqs, kept_scores
+        return kept_seqs
+
+    # ---- ESM-2 feature extractor (ftMLDE-style) ---------------------------
+
+    def _get_esm_extractor(self):
+        """Lazy-load ESM-2 model and tokenizer."""
+        if self._esm_extractor is not None:
+            return self._esm_extractor
+        from transformers import EsmModel, EsmTokenizer
+        model_name = 'facebook/esm2_t12_35M_UR50D'
+        logger.info(f"Loading ESM-2 ({model_name}) for surrogate features...")
+        tok = EsmTokenizer.from_pretrained(model_name)
+        mdl = EsmModel.from_pretrained(model_name).eval()
+        dev = torch.device(self.device if torch.cuda.is_available() else 'cpu')
+        mdl = mdl.to(dev)
+        self._esm_extractor = {'tokenizer': tok, 'model': mdl, 'device': dev, 'cache': {}}
+        return self._esm_extractor
+
+    def _embed_seqs_esm(self, seqs):
+        """ESM-2 mean-pool over varying positions, using WT-substituted full sequences."""
+        if self.wt_seq is None:
+            # Fallback: embed the short combo directly
+            wt_full = None
+        else:
+            wt_full = self.wt_seq
+
+        ext = self._get_esm_extractor()
+        tok, model, dev, cache = ext['tokenizer'], ext['model'], ext['device'], ext['cache']
+
+        # Reconstruct full sequences (or use combo as-is when no WT)
+        if wt_full is not None and hasattr(self, 'varying_positions') and self.varying_positions:
+            full_seqs = []
+            for combo in seqs:
+                arr = list(wt_full)
+                for i, p in enumerate(self.varying_positions):
+                    if i < len(combo):
+                        arr[p] = combo[i]
+                full_seqs.append(''.join(arr))
+            positions = self.varying_positions
+        else:
+            full_seqs = list(seqs)
+            positions = list(range(len(seqs[0])))
+
+        # Check cache + queue
+        feats = [None] * len(full_seqs)
+        to_compute_idx, to_compute_seqs = [], []
+        for i, s in enumerate(full_seqs):
+            if s in cache:
+                feats[i] = cache[s]
+            else:
+                to_compute_idx.append(i)
+                to_compute_seqs.append(s)
+
+        # Batch through ESM-2
+        if to_compute_seqs:
+            bs = 32
+            for b in range(0, len(to_compute_seqs), bs):
+                batch = to_compute_seqs[b:b + bs]
+                with torch.no_grad():
+                    tokens = tok(batch, return_tensors='pt', padding=True, truncation=True, max_length=1024)
+                    tokens = {k: v.to(dev) for k, v in tokens.items()}
+                    out = model(**tokens)
+                    # Mean over varying positions (+1 offset for [CLS] token)
+                    h = out.last_hidden_state  # (B, L+2, D)
+                    pos_feats = h[:, [p + 1 for p in positions], :].mean(dim=1)  # (B, D)
+                for j, s in enumerate(batch):
+                    vec = pos_feats[j].cpu().numpy()
+                    cache[s] = vec
+                    feats[to_compute_idx[b + j]] = vec
+        return np.stack(feats, axis=0)
+
+    # ---- CNN surrogate (FLEXS-style ensemble for uncertainty) -------------
+    _AMINO_ACIDS_ORD = "ACDEFGHIKLMNPQRSTVWY"
+
+    def _seqs_to_onehot(self, seqs: List[str]) -> "torch.Tensor":
+        """Convert sequences to one-hot tensor (B, seq_len, 20)."""
+        aa2idx = {aa: i for i, aa in enumerate(self._AMINO_ACIDS_ORD)}
+        L = len(seqs[0])
+        X = torch.zeros(len(seqs), L, len(self._AMINO_ACIDS_ORD), dtype=torch.float32)
+        for i, s in enumerate(seqs):
+            for j, aa in enumerate(s):
+                if aa in aa2idx:
+                    X[i, j, aa2idx[aa]] = 1.0
+        return X
+
+    @staticmethod
+    def _make_cnn(seq_len: int, vocab: int = 20, hidden: int = 64) -> "torch.nn.Module":
+        import torch.nn as nn
+        k = min(3, seq_len)
+        return nn.Sequential(
+            _Permute201(),  # (B, L, V) -> (B, V, L)
+            nn.Conv1d(vocab, hidden, kernel_size=k, padding='same'),
+            nn.ReLU(),
+            nn.Conv1d(hidden, hidden, kernel_size=k, padding='same'),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden, 1),
+        )
+
+    def _train_cnn_surrogate(self):
+        """Train a 5-model CNN ensemble on collected (seq, fitness) data."""
+        import torch.nn as nn
+
+        if len(self.collected_seqs) < 5:
+            self.surrogate_trained = False
+            return
+
+        dev = torch.device(self.device if torch.cuda.is_available() else 'cpu')
+        X = self._seqs_to_onehot(self.collected_seqs).to(dev)
+        y = torch.tensor(self.collected_fitness, dtype=torch.float32, device=dev)
+        seq_len = X.shape[1]
+
+        self.surrogate_models = []
+        for ens_i in range(5):
+            torch.manual_seed(self.seed + ens_i + 1000)
+            model = self._make_cnn(seq_len).to(dev)
+            opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+            loss_fn = nn.MSELoss()
+            model.train()
+            n_epochs = 80
+            bs = min(64, len(self.collected_seqs))
+            for ep in range(n_epochs):
+                perm = torch.randperm(len(self.collected_seqs), device=dev)
+                for b in range(0, len(self.collected_seqs), bs):
+                    idx = perm[b:b + bs]
+                    opt.zero_grad()
+                    pred = model(X[idx]).squeeze(-1)
+                    loss = loss_fn(pred, y[idx])
+                    loss.backward()
+                    opt.step()
+            model.eval()
+            self.surrogate_models.append(model)
+
+        self.surrogate_trained = True
+        self._surrogate_device = dev
+        logger.debug(f"Trained CNN surrogate ensemble on {len(self.collected_seqs)} samples")
+
+    def _predict_cnn_surrogate(self, seqs: List[str]) -> "Tuple[np.ndarray, np.ndarray, np.ndarray]":
+        """Predict using CNN ensemble. Returns (mu, sigma, per-model predictions)."""
+        if not self.surrogate_trained or not self.surrogate_models:
+            return np.zeros(len(seqs)), np.ones(len(seqs)), np.zeros((len(seqs), 1))
+        dev = self._surrogate_device
+        X = self._seqs_to_onehot(seqs).to(dev)
+        preds = np.zeros((len(seqs), len(self.surrogate_models)))
+        with torch.no_grad():
+            for i, m in enumerate(self.surrogate_models):
+                preds[:, i] = m(X).squeeze(-1).cpu().numpy()
+        mu = preds.mean(axis=1)
+        sigma = preds.std(axis=1)
+        return mu, sigma, preds
+
+    # ---- End CNN surrogate ------------------------------------------------
+
+    def _featurize(self, seqs):
+        """Return numpy features for surrogate per self.features_kind."""
+        if self.features_kind == 'esm2':
+            return self._embed_seqs_esm(seqs)
+        from popscorer.fitness.aa_onehot_pred.embed import seqs2feat
+        return seqs2feat(seqs)
+
     def _train_surrogate(self):
         """Train surrogate model on all collected data."""
+        if self.surrogate_kind == 'cnn':
+            return self._train_cnn_surrogate()
+
         from sklearn.linear_model import Ridge, BayesianRidge
         from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-        from popscorer.fitness.aa_onehot_pred.embed import seqs2feat
 
         if len(self.collected_seqs) == 0:
             logger.warning("No training data for surrogate")
             return
 
-        X = seqs2feat(self.collected_seqs)
+        X = self._featurize(self.collected_seqs)
         y = np.array(self.collected_fitness)
 
         # Train ensemble of models
@@ -654,12 +962,14 @@ class IterativeProteinTrainer:
 
     def _predict_surrogate(self, seqs: List[str]) -> Tuple[np.ndarray, np.ndarray]:
         """Predict using surrogate ensemble with uncertainty."""
-        from popscorer.fitness.aa_onehot_pred.embed import seqs2feat
+        if self.surrogate_kind == 'cnn':
+            mu, sigma, _ = self._predict_cnn_surrogate(seqs)
+            return mu + 2.0 * sigma, mu
 
         if not self.surrogate_trained or len(self.surrogate_models) == 0:
             return np.zeros(len(seqs)), np.ones(len(seqs))
 
-        X = seqs2feat(seqs)
+        X = self._featurize(seqs)
         predictions = np.zeros((len(seqs), len(self.surrogate_models)))
 
         for i, model in enumerate(self.surrogate_models):
@@ -674,12 +984,13 @@ class IterativeProteinTrainer:
 
     def _predict_surrogate_with_samples(self, seqs: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Predict using surrogate ensemble and return individual model predictions."""
-        from popscorer.fitness.aa_onehot_pred.embed import seqs2feat
+        if self.surrogate_kind == 'cnn':
+            return self._predict_cnn_surrogate(seqs)
 
         if not self.surrogate_trained or len(self.surrogate_models) == 0:
             return np.zeros(len(seqs)), np.ones(len(seqs)), np.zeros((len(seqs), 1))
 
-        X = seqs2feat(seqs)
+        X = self._featurize(seqs)
         predictions = np.zeros((len(seqs), len(self.surrogate_models)))
 
         for i, model in enumerate(self.surrogate_models):
@@ -1018,6 +1329,91 @@ class IterativeProteinTrainer:
 
         return collected_seqs, collected_fitness
 
+    def _train_gpt_ensemble(
+        self, n_steps: int, round_idx: int = 0
+    ) -> Tuple[List[str], np.ndarray]:
+        """Train K GPT ensemble members with data + surrogate bagging.
+
+        For each ensemble member k (k = 1..K):
+          1) Bootstrap-sample ``collected_seqs`` (with replacement).
+          2) Train a fresh surrogate on the bootstrap sample.
+          3) Reset agent_model from prior with a member-specific sub-seed.
+          4) Run REINFORCE on the bootstrap-fitted surrogate.
+          5) Merge proposals into the combined pool.
+
+        After all K members finish, the surrogate is set to the concatenated
+        list of all K×5 sub-models so that downstream ``_active_sample`` /
+        ``_predict_surrogate`` calls see a properly-bagged ensemble — the
+        across-bootstrap variance becomes the natural epistemic uncertainty
+        used for Thompson Sampling / UCB.
+
+        Final score per pooled sequence = bagged surrogate mean (raw), so the
+        caller's active sampler picks via the disagreement-aware acquisition.
+        """
+        K = max(1, int(getattr(self, "n_gpt_ensemble", 1)))
+        if K == 1:
+            return self._train_gpt_on_surrogate(n_steps, round_idx)
+
+        combined_pool: Dict[str, None] = {}
+        prior_state = {kk: v.detach().clone() for kk, v in self.prior_model.state_dict().items()}
+
+        # Save original collected data; we'll temporarily replace it with bootstraps
+        orig_collected_seqs = list(self.collected_seqs)
+        orig_collected_fitness = list(self.collected_fitness)
+        n = len(orig_collected_seqs)
+
+        all_sub_models: list = []  # accumulate K × 5 sub-models for super-ensemble
+
+        for k in range(K):
+            # ---- 1A: Bootstrap collected data for this member ----
+            rng = np.random.RandomState(self.seed + 7919 * (k + 1) + round_idx * 31)
+            idx = rng.choice(n, size=n, replace=True)
+            self.collected_seqs = [orig_collected_seqs[i] for i in idx]
+            self.collected_fitness = [orig_collected_fitness[i] for i in idx]
+
+            # ---- 3A: Train surrogate on bootstrap sample ----
+            self._train_surrogate()
+            member_models = list(self.surrogate_models)  # snapshot
+            all_sub_models.extend(member_models)
+
+            # Reset agent to prior, re-seed for diversity
+            self.agent_model.load_state_dict({kk: v.clone() for kk, v in prior_state.items()})
+            torch.manual_seed(self.seed + 7919 * (k + 1) + round_idx * 31)
+            try:
+                self.optimizer = self.agent_model.configure_optimizers(self.optim_config)
+            except Exception:
+                self.optimizer = torch.optim.Adam(self.agent_model.parameters(), lr=1e-4)
+
+            logger.info(f"  Ensemble member {k + 1}/{K} (bootstrap n={n}) starting REINFORCE...")
+            seqs, _scores = self._train_gpt_on_surrogate(n_steps, round_idx)
+            for s in seqs:
+                if s not in combined_pool:
+                    combined_pool[s] = None
+            logger.info(f"  Ensemble member {k + 1}/{K} done — pool size: {len(combined_pool)}")
+
+        # Restore original collected data
+        self.collected_seqs = orig_collected_seqs
+        self.collected_fitness = orig_collected_fitness
+
+        # ---- 2B / 3A combined: install super-ensemble surrogate ----
+        # All K × 5 sub-models become "the" surrogate for downstream selection.
+        # Across-bootstrap variance becomes proper epistemic uncertainty.
+        self.surrogate_models = all_sub_models
+        self.surrogate_trained = True
+
+        seqs_out = list(combined_pool.keys())
+        if not seqs_out:
+            return [], np.array([])
+        # Final scores = bagged raw mean (mu), so _active_sample will compute UCB/TS
+        # using the K×5 super-ensemble's std as uncertainty.
+        _ucb, mu = self._predict_surrogate(seqs_out)
+        scores_out = np.asarray(mu, dtype=float)
+        logger.info(
+            f"GPT ensemble ({K} members, {len(all_sub_models)} surrogate sub-models) "
+            f"produced {len(seqs_out)} unique proposals"
+        )
+        return seqs_out, scores_out
+
     def train(self) -> Tuple[List[str], List[float], List[float]]:
         """Run iterative training for n_rounds."""
         logger.info(f"Starting iterative training: {self.n_rounds} rounds, {self.batch_size} samples/round")
@@ -1030,6 +1426,14 @@ class IterativeProteinTrainer:
             logger.info(f"\n{'='*50}")
             logger.info(f"Round {round_idx + 1}/{self.n_rounds}" + (" (LAST)" if is_last_round else ""))
             logger.info(f"{'='*50}")
+
+            # Free unused cached blocks between rounds. On hosts where the
+            # NVML kernel/userland versions disagree, PyTorch's caching
+            # allocator can wedge mid-run after the GPT training in Round 1;
+            # explicitly releasing cached blocks before each subsequent round
+            # avoids that failure path.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             if round_idx == 0:
                 # Round 1: Initial sampling from landscape
@@ -1056,9 +1460,17 @@ class IterativeProteinTrainer:
                 self._train_surrogate()
 
                 logger.info(f"Step 3: Training GPT for {self.n_steps_per_round} steps...")
-                generated_seqs, generated_fitness = self._train_gpt_on_surrogate(
+                generated_seqs, generated_fitness = self._train_gpt_ensemble(
                     self.n_steps_per_round, round_idx=round_idx
                 )
+
+                # Drop GPT proposals that violate per-position observed alphabets
+                if self.constrain_alphabet:
+                    before = len(generated_seqs)
+                    generated_seqs, generated_fitness = self._filter_on_alphabet(
+                        generated_seqs, generated_fitness
+                    )
+                    logger.info(f"  Alphabet-constraint filter: kept {len(generated_seqs)}/{before} proposals")
 
                 collected_set = set(self.collected_seqs)
 
@@ -1190,7 +1602,7 @@ def load_landscape_data_local(data_path: str) -> Tuple[List[str], np.ndarray]:
                 else 'seq' if 'seq' in df.columns
                 else 'sequence')
     sequences = df[_seq_col].tolist()
-    fitness = df['fitness'].values
+    fitness = _scalarized_fitness(df)
     return sequences, fitness
 
 
@@ -1281,6 +1693,11 @@ def run_single_experiment(
     finetune_lr: float = 1e-4,
     level: str = 'medium',
     device: str = 'cuda:0',
+    surrogate_kind: str = 'ensemble',
+    prior_model_path: Optional[str] = None,
+    constrain_alphabet: bool = False,
+    features_kind: str = 'onehot',
+    n_gpt_ensemble: int = 1,
 ) -> Dict[str, Any]:
     """Run a single AlphaVariant iterative optimization experiment on any dataset."""
 
@@ -1369,7 +1786,22 @@ def run_single_experiment(
         temp_dir = os.path.join(run_dir, 'generated_template')
         os.makedirs(temp_dir, exist_ok=True)
         fasta_path = create_temp_fasta(wildtype, temp_dir)
-        hotspot_path = create_temp_hotspots(seq_len, temp_dir)
+        # Derive the hotspots (search-space definition) directly from the
+        # library so the GPT decoder is constrained to the actual
+        # combinatorial subspace covered by the dataset (e.g. 2^13 = 8192
+        # for eqFP611_joint, 20^4 for the 4site_* datasets).
+        try:
+            _df = pd.read_csv(landscape_path)
+            _seq_col = ('AACombo' if 'AACombo' in _df.columns
+                        else 'Combo' if 'Combo' in _df.columns
+                        else 'seq' if 'seq' in _df.columns
+                        else 'sequence')
+            _library_seqs = _df[_seq_col].tolist()
+        except Exception as _e:
+            logger.warning(f"Could not load library for hotspots derivation: {_e}")
+            _library_seqs = None
+        hotspot_path = create_temp_hotspots(seq_len, temp_dir,
+                                            sequences=_library_seqs)
 
         logger.info("Initializing template from auto-generated files...")
         fasta_sequences, _ = read_fasta_as_list(fasta_path)
@@ -1409,6 +1841,12 @@ def run_single_experiment(
         n_finetune_epochs=n_finetune_epochs,
         finetune_lr=finetune_lr,
         level=level,
+        surrogate_kind=surrogate_kind,
+        prior_model_path=prior_model_path,
+        constrain_alphabet=constrain_alphabet,
+        features_kind=features_kind,
+        wt_seq=wildtype,
+        n_gpt_ensemble=n_gpt_ensemble,
     )
 
     # Run iterative training
@@ -1636,10 +2074,23 @@ Examples:
     parser.add_argument("--skip_metrics", action="store_true", help="Skip metrics computation")
 
     # Training parameters
-    parser.add_argument("--level", type=str, choices=['medium', 'hard'], default='medium',
-                       help="Difficulty level for initial sampling (default: medium)")
-    parser.add_argument("--n_rounds", type=int, default=15,
-                       help="Number of iterative rounds (default: 15)")
+    parser.add_argument("--surrogate", type=str, choices=['ensemble', 'cnn'], default='ensemble',
+                        help="Surrogate model: 'ensemble' (Ridge+RF+GBT, default) or 'cnn' (FLEXS-style CNN ensemble)")
+    parser.add_argument("--features", type=str, choices=['onehot', 'esm2'], default='onehot',
+                        help="Surrogate features: 'onehot' (popscorer aa_onehot, default) or 'esm2' "
+                        "(facebook/esm2_t12_35M_UR50D mean-pooled over varying positions of WT-substituted sequence)")
+    parser.add_argument("--constrain_alphabet", action="store_true", default=False,
+                        help="Drop GPT proposals whose AAs violate the observed per-position alphabet "
+                        "(library subspace constraint, FLEXS-style).")
+    parser.add_argument("--n_gpt_ensemble", type=int, default=1,
+                        help="Number of GPT ensemble members per round (bagging). Each member trains "
+                        "n_steps_per_round REINFORCE steps from a fresh copy of the prior with a "
+                        "different sub-seed; proposals are merged into one pool.")
+    parser.add_argument("--level", type=str, choices=['uniform', 'medium', 'hard'], default='uniform',
+                       help="Difficulty level for initial sampling (default: uniform — "
+                            "matches all other benchmark methods; non-uniform levels are a fitness leak)")
+    parser.add_argument("--n_rounds", type=int, default=5,
+                       help="Number of iterative rounds (default: 5 -> 480 queries, benchmark-standard)")
     parser.add_argument("--n_steps_per_round", type=int, default=500,
                        help="GPT training steps per round (default: 500)")
     parser.add_argument("--batch_size", type=int, default=96,
@@ -1664,6 +2115,9 @@ Examples:
                        help="Number of epochs for prior finetuning (default: 10)")
     parser.add_argument("--finetune_lr", type=float, default=1e-4,
                        help="Learning rate for prior finetuning (default: 1e-4)")
+    parser.add_argument("--prior_model_path", type=str, default=None,
+                       help="Path to a pretrained GPT prior (e.g. trained on a family MSA). "
+                            "If set, used as the starting GPT instead of random init.")
 
     parser.add_argument(
         "--ablation", type=str, default="none",
@@ -1736,6 +2190,11 @@ Examples:
             finetune_lr=args.finetune_lr,
             level=args.level,
             device=args.device,
+            surrogate_kind=args.surrogate,
+            constrain_alphabet=args.constrain_alphabet,
+            features_kind=args.features,
+            n_gpt_ensemble=args.n_gpt_ensemble,
+            prior_model_path=args.prior_model_path,
         )
         results.append(result)
 

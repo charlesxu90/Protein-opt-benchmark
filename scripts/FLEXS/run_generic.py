@@ -134,13 +134,45 @@ class GenericLandscape(flexs.Landscape):
         self.seq_to_idx = {seq: i for i, seq in enumerate(self.sequences)}
         self.seq_to_fitness = {seq: fit for seq, fit in zip(self.sequences, self.fitness)}
 
-        # Wild-type fallback: sequence with highest fitness
-        best_idx = int(np.argmax(self.fitness))
-        self.wildtype = self.sequences[best_idx]
+        # Wildtype resolution: prefer wt.fasta (authoritative, no fitness leak),
+        # then n_muts==0 row, then argmax(fitness) with a warning.
+        wt_fasta = os.path.join(data_dir, dataset, "wt.fasta")
+        self.wildtype = None
+        if os.path.exists(wt_fasta):
+            with open(wt_fasta) as fh:
+                lines = [ln.strip() for ln in fh if ln.strip() and not ln.startswith('>')]
+            if lines:
+                self.wildtype = "".join(lines)
+        if self.wildtype is None and 'n_muts' in self.data.columns and (self.data['n_muts'] == 0).any():
+            wt_idx = int(self.data.index[self.data['n_muts'] == 0][0])
+            self.wildtype = self.sequences[wt_idx]
+        if self.wildtype is None:
+            print(f"WARNING: no wt.fasta or n_muts==0 row for {dataset}; falling back "
+                  f"to argmax(fitness) as wildtype — LEAKY.")
+            self.wildtype = self.sequences[int(np.argmax(self.fitness))]
 
         # Auto-detect sequence length from data
         self.seq_length = len(self.sequences[0])
         self._compute_alphabet()
+
+        # Per-position AA sets for combinatorial libraries. Sequences live on
+        # a discrete combinatorial subspace — only a handful of positions vary,
+        # and at each varying position only a subset of AAs occurs. Mutating
+        # outside this subspace produces sequences that aren't in the library
+        # (fitness=0), wasting the FLEXS query budget. Cache the per-position
+        # AA sets so mutations can stay inside the library.
+        self._compute_per_position_alphabets()
+
+    def _compute_per_position_alphabets(self):
+        """Per-position observed AA sets; identify varying positions."""
+        seqs = self.sequences
+        L = self.seq_length
+        per_pos: List[List[str]] = []
+        for p in range(L):
+            aas = sorted({s[p] for s in seqs if len(s) > p})
+            per_pos.append(aas)
+        self.per_position_alphabets = per_pos
+        self.varying_positions = [p for p, aas in enumerate(per_pos) if len(aas) > 1]
 
     def _compute_alphabet(self):
         """Compute the alphabet from all sequences."""
@@ -274,7 +306,7 @@ def run_single_experiment(
     run_id: Optional[int] = None,
     compute_metrics_flag: bool = True,
     data_dir: str = "/home/xux/Desktop/AlphaVariant/Benchmark/data",
-    rounds: int = 14,  # 14 optimization rounds (matching 15 total)
+    rounds: int = 4,  # 4 BO rounds -> 5 total batches (480 queries), benchmark-standard
     sequences_batch_size: int = 96,
     model_queries_per_batch: int = 2000,
     n_init_samples: int = 96  # Random initial samples (matching ALDE)
@@ -356,27 +388,16 @@ def run_single_experiment(
     model = flexs.Ensemble(ensemble_models)
 
     # =========================================================================
-    # Random initialization (matching ALDE)
+    # Uniform random initialization (matching ALDE, Random, CLADE, AiCE).
+    # The previous percentile-restricted init biased FLEXS toward medium-
+    # fitness sequences, which is both a fitness leak and (counter-intuitively)
+    # often a worse starting point than a broad random sample of the library.
     # =========================================================================
-    print(f"\nRound 0: Percentile-based initialization ({n_init_samples} samples)")
+    print(f"\nRound 0: Uniform random initialization ({n_init_samples} samples)")
 
-    # Sample from 40th-60th percentile (medium fitness)
     all_fitness = landscape.get_all_fitness()
-    threshold_low = np.percentile(all_fitness, 40)
-    threshold_high = np.percentile(all_fitness, 60)
-    medium_mask = (all_fitness >= threshold_low) & (all_fitness <= threshold_high)
-    medium_indices = np.where(medium_mask)[0]
-
-    # If not enough sequences in the medium range, broaden the range
-    if len(medium_indices) < n_init_samples:
-        print(f"  Warning: Only {len(medium_indices)} sequences in 40-60th percentile, "
-              f"broadening to 20-80th percentile")
-        threshold_low = np.percentile(all_fitness, 20)
-        threshold_high = np.percentile(all_fitness, 80)
-        medium_mask = (all_fitness >= threshold_low) & (all_fitness <= threshold_high)
-        medium_indices = np.where(medium_mask)[0]
-
-    init_indices = np.random.choice(medium_indices, size=min(n_init_samples, len(medium_indices)), replace=False)
+    n_total = len(all_sequences)
+    init_indices = np.random.choice(n_total, size=min(n_init_samples, n_total), replace=False)
 
     # Get initial sequences and their true fitness
     init_sequences = [all_sequences[i] for i in init_indices]
@@ -427,6 +448,24 @@ def run_single_experiment(
         eval_batch_size = 20
         mu = 1  # Expected mutations per sequence
 
+        # Library-aware mutation: only flip varying positions, and only to AAs
+        # that exist at that position in the library. This keeps proposed
+        # mutants on the combinatorial subspace the landscape actually covers.
+        varying_positions = landscape.varying_positions
+        per_pos_aas = landscape.per_position_alphabets
+        import random as _random
+        def gen_in_library_mutant(node):
+            if not varying_positions:
+                return node
+            p_mut = mu / len(varying_positions)
+            chars = list(node)
+            for p in varying_positions:
+                if _random.random() < p_mut:
+                    choices = [a for a in per_pos_aas[p] if a != chars[p]]
+                    if choices:
+                        chars[p] = _random.choice(choices)
+            return "".join(chars)
+
         while model.cost - previous_cost < model_queries_per_batch:
             for i in range(0, len(parents), eval_batch_size):
                 roots = parents[i:i + eval_batch_size]
@@ -441,12 +480,9 @@ def run_single_experiment(
                     children = []
 
                     for idx, node in nodes:
-                        # Generate mutant
-                        child = s_utils.generate_random_mutant(
-                            node,
-                            mu / len(node),
-                            alphabet
-                        )
+                        # Generate library-aware mutant (only mutates the
+                        # varying positions, sampling from observed AAs).
+                        child = gen_in_library_mutant(node)
 
                         # Only keep novel sequences
                         if child not in measured_set and child not in sequences:
@@ -750,8 +786,8 @@ Examples:
     parser.add_argument(
         "--rounds",
         type=int,
-        default=14,
-        help="Number of optimization rounds after init (default: 14, total 15)"
+        default=4,
+        help="Number of optimization rounds after init (default: 4, total 5 = 480 queries)"
     )
     parser.add_argument(
         "--init_samples",
