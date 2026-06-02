@@ -1,1 +1,0 @@
-/home/xux/Desktop/AlphaVariant/Benchmark/scripts/delta_cs/BioSeq-GFN-AL/run_GFP_hard.py
