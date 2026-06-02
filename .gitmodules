@@ -13,6 +13,3 @@
 [submodule "CLADE"]
 	path = CLADE
 	url = https://github.com/WeilabMSU/CLADE-2.0
-[submodule "Mu-Protein"]
-	path = Mu-Protein
-	url = https://github.com/microsoft/Mu-Protein
