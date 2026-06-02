@@ -1,15 +1,15 @@
 [submodule "EVOLVEpro"]
 	path = EVOLVEpro
-	url = https://github.com/mat10d/EVOLVEpro
+	url = git@github.com:charlesxu90/EvolvePro.git
 [submodule "ftMLDE"]
 	path = ftMLDE
-	url = https://github.com/fhalab/MLDE
+	url = git@github.com:charlesxu90/MLDE.git
 [submodule "MULTIevolve"]
 	path = MULTIevolve
-	url = https://github.com/ArcInstitute/MULTI-evolve
+	url = git@github.com:charlesxu90/MULTI-evolve.git
 [submodule "alphavariant"]
 	path = alphavariant
 	url = https://github.com/charlesxu90/AlphaVariant
 [submodule "CLADE"]
 	path = CLADE
-	url = https://github.com/WeilabMSU/CLADE-2.0
+	url = git@github.com:charlesxu90/CLADE-2.0.git
