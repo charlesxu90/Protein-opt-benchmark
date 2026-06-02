@@ -1,0 +1,11 @@
+{
+  "dataset": "ms_AAV",
+  "best_test_spearman": 0.8921447500262021,
+  "seq_len": 28,
+  "fit_min": 0.0,
+  "fit_max": 1.0,
+  "n": 44128,
+  "epochs": 100,
+  "runtime_s": 42.596903,
+  "smoke": false
+}

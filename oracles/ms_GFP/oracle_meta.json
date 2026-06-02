@@ -1,0 +1,11 @@
+{
+  "dataset": "ms_GFP",
+  "best_test_spearman": 0.8586753982494562,
+  "seq_len": 237,
+  "fit_min": 0.3112746457426548,
+  "fit_max": 1.0,
+  "n": 51715,
+  "epochs": 100,
+  "runtime_s": 122.969654,
+  "smoke": false
+}

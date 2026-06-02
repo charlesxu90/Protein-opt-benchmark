@@ -4,15 +4,20 @@ Render the main-figure max-fitness bar chart (and the supplementary
 top-128 mean-fitness bar chart) using median + Q1/Q3 IQR error bars
 instead of the mean ± std presentation in `draw_figures.py`.
 
+Supports two tasks (select with --task):
+    4site     : the 4-site combinatorial benchmark (GB1/PhoQ/TEV/TrpB)  [default]
+    multisite : the multi-site learned-oracle benchmark (AAV/CreiLOV/GFP/PAB1)
+
 Input: a CSV with columns
     dataset, method,
     max_fitness_median, max_fitness_q1, max_fitness_q3,
     top128_median, top128_q1, top128_q3, n
-(produced by `scripts/build_median_iqr_csv.py`).
+(4site: produced by scripts/build_median_iqr_csv.py;
+ multisite: produced by scripts/build_oracle_median_iqr_csv.py)
 
 Outputs (per --outdir):
-    main_figure_max_fitness_median_iqr.{png,pdf}
-    supplementary_figure_top128_mean_fitness_median_iqr.{png,pdf}
+    main_figure[_multisite]_max_fitness_median_iqr.{png,pdf}
+    supplementary_figure[_multisite]_top128_mean_fitness_median_iqr.{png,pdf}
 """
 import argparse
 import os
@@ -27,18 +32,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from utils.plot_style_utils import CAT_PALETTE, GRAY, prettify_ax
 
 _DEFAULT_BASE = "/home/xux/Desktop/AlphaVariant/Benchmark/figures"
-
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--csv", default=os.path.join(_DEFAULT_BASE, "alphavariant_comparison_median_iqr.csv"))
-parser.add_argument("--outdir", default=_DEFAULT_BASE)
-_args = parser.parse_args()
-
-OUTDIR = _args.outdir
-os.makedirs(OUTDIR, exist_ok=True)
-source_csv = _args.csv
-if not os.path.exists(source_csv):
-    raise FileNotFoundError(f"Source CSV not found at {source_csv}.")
-df = pd.read_csv(source_csv)
 
 mpl.rcParams.update({
     "font.family": "sans-serif",
@@ -69,7 +62,6 @@ colors = {
     "MULTIevolve":  CAT_PALETTE[7],   # gray
     "EVOLVEpro":    CAT_PALETTE[8],   # yellow
 }
-HIGHLIGHT_METHODS = {"AlphaVariant"}
 
 # Display-name mapping: FLEXS algorithm is AdaLead (canonical name in the
 # directed-evolution literature); user requested label rename in figures.
@@ -77,18 +69,44 @@ DISPLAY_NAMES = {
     "FLEXS": "AdaLead",
 }
 
-# Main-figure method allow-list (drops AlphaVariant_base/_SHAP/_PLM/_Hybrid ablation rows).
-# delta_cs excluded per user request (consistently lowest, distracting from main comparison).
-MAIN_METHODS = {"Random", "GreedyWalk", "ALDE", "FLEXS", "AiCE",
-                "ftMLDE", "CLADE", "AlphaVariant",
-                "MULTIevolve", "EVOLVEpro"}
-
-dataset_order = ["4site_GB1", "4site_PhoQ", "4site_TEV", "4site_TRPB"]
-dataset_labels = {
-    "4site_GB1":  "GB1 4-site",
-    "4site_PhoQ": "PhoQ 4-site",
-    "4site_TEV":  "TEV 4-site",
-    "4site_TRPB": "TrpB 4-site",
+# ---------------------------------------------------------------------------
+# Per-task configuration. 4site preserves the original behavior verbatim.
+# ---------------------------------------------------------------------------
+TASKS = {
+    "4site": {
+        "default_csv": os.path.join(_DEFAULT_BASE, "alphavariant_comparison_median_iqr.csv"),
+        "default_outdir": _DEFAULT_BASE,
+        "dataset_order": ["4site_GB1", "4site_PhoQ", "4site_TEV", "4site_TRPB"],
+        "dataset_labels": {
+            "4site_GB1": "GB1 4-site", "4site_PhoQ": "PhoQ 4-site",
+            "4site_TEV": "TEV 4-site", "4site_TRPB": "TrpB 4-site",
+        },
+        # Main-figure method allow-list (drops AlphaVariant ablation rows;
+        # delta_cs excluded per user request).
+        "main_methods": {"Random", "GreedyWalk", "ALDE", "FLEXS", "AiCE",
+                         "ftMLDE", "CLADE", "AlphaVariant",
+                         "MULTIevolve", "EVOLVEpro"},
+        "highlight": {"AlphaVariant"},
+        "max_prefix": "main_figure_max_fitness_median_iqr",
+        "top_prefix": "supplementary_figure_top128_mean_fitness_median_iqr",
+        "max_ylim": (0.0, 1.1), "max_yticks": np.arange(0.0, 1.01, 0.2),
+        "top_ylim": (0.0, 0.82), "top_yticks": np.arange(0.0, 0.71, 0.1),
+    },
+    "multisite": {
+        "default_csv": os.path.join(_DEFAULT_BASE, "ms_oracles", "multisite_oracle_median_iqr.csv"),
+        "default_outdir": os.path.join(_DEFAULT_BASE, "ms_oracles"),
+        "dataset_order": ["ms_AAV", "ms_CreiLOV", "ms_GFP", "ms_PAB1"],
+        "dataset_labels": {
+            "ms_AAV": "AAV multi-site", "ms_CreiLOV": "CreiLOV multi-site",
+            "ms_GFP": "GFP multi-site", "ms_PAB1": "PAB1 multi-site",
+        },
+        "main_methods": {"Random", "GreedyWalk", "ALDE", "CLADE", "ftMLDE"},
+        "highlight": set(),
+        "max_prefix": "main_figure_multisite_max_fitness_median_iqr",
+        "top_prefix": "supplementary_figure_multisite_top128_mean_fitness_median_iqr",
+        "max_ylim": (0.0, 1.1), "max_yticks": np.arange(0.0, 1.01, 0.2),
+        "top_ylim": (0.0, 1.05), "top_yticks": np.arange(0.0, 1.01, 0.2),
+    },
 }
 
 
@@ -116,30 +134,34 @@ def style_axis(ax, ylim, yticks):
         ax.spines[spine].set_linewidth(0.6)
 
 
-def plot_metric_figure(metric_med, metric_q1, metric_q3, ylabel, title,
-                        output_prefix, panel_letter, ylim, yticks):
+def plot_metric_figure(df, cfg, outdir, metric_med, metric_q1, metric_q3,
+                       ylabel, title, output_prefix, panel_letter, ylim, yticks,
+                       seed_note):
+    dataset_order = cfg["dataset_order"]
+    dataset_labels = cfg["dataset_labels"]
+    main_methods = cfg["main_methods"]
+    highlight = cfg["highlight"]
+
     fig, axes = plt.subplots(1, 4, figsize=(7.25, 2.72), sharey=True)
     fig.patch.set_facecolor("white")
 
     for col, (ax, dataset) in enumerate(zip(axes, dataset_order)):
-        sub = df[(df["dataset"] == dataset) & (df["method"].isin(MAIN_METHODS))].copy()
+        sub = df[(df["dataset"] == dataset) & (df["method"].isin(main_methods))].copy()
         # Primary sort: median ascending. Secondary sort: Q1 ascending — breaks
-        # ceiling ties (e.g. GB1 where multiple methods all have median = 1.0)
-        # by putting the method with the tightest lower quartile to the right.
+        # ceiling ties by putting the tightest lower quartile to the right.
         sub = sub.sort_values([metric_med, metric_q1], ascending=[True, True])
         methods = sub["method"].tolist()
         med = sub[metric_med].to_numpy(dtype=float)
         q1 = sub[metric_q1].to_numpy(dtype=float)
         q3 = sub[metric_q3].to_numpy(dtype=float)
-        # Asymmetric error bars: (lower, upper) distances from the median.
         err_lo = np.clip(med - q1, 0.0, None)
         err_hi = np.clip(q3 - med, 0.0, None)
         yerr = np.vstack([err_lo, err_hi])
         x = np.arange(len(methods))
 
-        bar_colors = [lighten(colors[m], 0.05 if m in HIGHLIGHT_METHODS else 0.16) for m in methods]
-        edge_colors = ["#111111" if m in HIGHLIGHT_METHODS else "white" for m in methods]
-        line_widths = [0.80 if m in HIGHLIGHT_METHODS else 0.30 for m in methods]
+        bar_colors = [lighten(colors[m], 0.05 if m in highlight else 0.16) for m in methods]
+        edge_colors = ["#111111" if m in highlight else "white" for m in methods]
+        line_widths = [0.80 if m in highlight else 0.30 for m in methods]
 
         bars = ax.bar(x, med, width=0.76, color=bar_colors, edgecolor=edge_colors,
                       linewidth=line_widths, zorder=3)
@@ -155,16 +177,15 @@ def plot_metric_figure(metric_med, metric_q1, metric_q3, ylabel, title,
 
         ax.set_title(dataset_labels[dataset], pad=7, fontweight="bold")
         ax.set_xticks(x)
-        # Apply display-name mapping (e.g. FLEXS → AdaLead) for xtick labels only;
-        # internal `methods` list keeps the canonical CSV names for color lookup.
         display_labels = [display_name(m) for m in methods]
         ax.set_xticklabels(display_labels, rotation=60, ha="right", rotation_mode="anchor")
-        highlight_display = {display_name(m) for m in HIGHLIGHT_METHODS}
-        highlight_color = mcolors.to_hex(colors["AlphaVariant"])
-        for tick in ax.get_xticklabels():
-            if tick.get_text() in highlight_display:
-                tick.set_fontweight("bold")
-                tick.set_color(highlight_color)
+        highlight_display = {display_name(m) for m in highlight}
+        if highlight:
+            highlight_color = mcolors.to_hex(colors["AlphaVariant"])
+            for tick in ax.get_xticklabels():
+                if tick.get_text() in highlight_display:
+                    tick.set_fontweight("bold")
+                    tick.set_color(highlight_color)
         style_axis(ax, ylim, yticks)
         if col == 0:
             ax.set_ylabel(ylabel, labelpad=4)
@@ -172,45 +193,60 @@ def plot_metric_figure(metric_med, metric_q1, metric_q3, ylabel, title,
             ax.tick_params(axis="y", length=0)
 
     fig.text(0.012, 0.985, panel_letter, ha="left", va="top",
-              fontsize=10.5, fontweight="bold")
+             fontsize=10.5, fontweight="bold")
     fig.suptitle(title, x=0.066, y=0.985, ha="left", va="top",
-                  fontsize=10.5, fontweight="bold")
+                 fontsize=10.5, fontweight="bold")
     fig.text(
         0.081, 0.012,
-        "Bars show median across 30 seeds per method per dataset; error bars span Q1–Q3 (IQR). "
+        f"Bars show median across {seed_note} seeds per method per dataset; error bars span Q1–Q3 (IQR). "
         "Within each panel methods are ordered by median ascending; ties broken by Q1 ascending.",
         ha="left", va="bottom", fontsize=5.5, color="#4D4D4D",
     )
     fig.subplots_adjust(left=0.08, right=0.996, bottom=0.34, top=0.82, wspace=0.28)
 
     for ext in ["png", "pdf"]:
-        fig.savefig(os.path.join(OUTDIR, f"{output_prefix}.{ext}"),
-                     bbox_inches="tight", pad_inches=0.025)
+        fig.savefig(os.path.join(outdir, f"{output_prefix}.{ext}"),
+                    bbox_inches="tight", pad_inches=0.025)
     plt.close(fig)
 
 
-plot_metric_figure(
-    metric_med="max_fitness_median",
-    metric_q1="max_fitness_q1",
-    metric_q3="max_fitness_q3",
-    ylabel="Median max fitness",
-    title="Max fitness across datasets — median ± Q1–Q3 IQR",
-    output_prefix="main_figure_max_fitness_median_iqr",
-    panel_letter="a",
-    ylim=(0.0, 1.1),
-    yticks=np.arange(0.0, 1.01, 0.2),
-)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", choices=list(TASKS.keys()), default="4site")
+    parser.add_argument("--csv", default=None, help="defaults to the task's CSV")
+    parser.add_argument("--outdir", default=None, help="defaults to the task's outdir")
+    args = parser.parse_args()
+    cfg = TASKS[args.task]
 
-plot_metric_figure(
-    metric_med="top128_median",
-    metric_q1="top128_q1",
-    metric_q3="top128_q3",
-    ylabel="Median of top-128 mean fitness",
-    title="Top-128 mean fitness across datasets — median ± Q1–Q3 IQR",
-    output_prefix="supplementary_figure_top128_mean_fitness_median_iqr",
-    panel_letter="a",
-    ylim=(0.0, 0.82),
-    yticks=np.arange(0.0, 0.71, 0.1),
-)
+    source_csv = args.csv or cfg["default_csv"]
+    outdir = args.outdir or cfg["default_outdir"]
+    os.makedirs(outdir, exist_ok=True)
+    if not os.path.exists(source_csv):
+        raise FileNotFoundError(f"Source CSV not found at {source_csv}.")
+    df = pd.read_csv(source_csv)
+    seed_note = int(df["n"].max()) if "n" in df.columns else 30
 
-print(f"Wrote median+IQR figures to {OUTDIR}")
+    label_kind = "multi-site oracles" if args.task == "multisite" else "datasets"
+    plot_metric_figure(
+        df, cfg, outdir,
+        metric_med="max_fitness_median", metric_q1="max_fitness_q1",
+        metric_q3="max_fitness_q3",
+        ylabel="Median max fitness",
+        title=f"Max fitness across {label_kind} — median ± Q1–Q3 IQR",
+        output_prefix=cfg["max_prefix"], panel_letter="a",
+        ylim=cfg["max_ylim"], yticks=cfg["max_yticks"], seed_note=seed_note,
+    )
+    plot_metric_figure(
+        df, cfg, outdir,
+        metric_med="top128_median", metric_q1="top128_q1",
+        metric_q3="top128_q3",
+        ylabel="Median of top-128 mean fitness",
+        title=f"Top-128 mean fitness across {label_kind} — median ± Q1–Q3 IQR",
+        output_prefix=cfg["top_prefix"], panel_letter="a",
+        ylim=cfg["top_ylim"], yticks=cfg["top_yticks"], seed_note=seed_note,
+    )
+    print(f"Wrote median+IQR figures ({args.task}) to {outdir}")
+
+
+if __name__ == "__main__":
+    main()

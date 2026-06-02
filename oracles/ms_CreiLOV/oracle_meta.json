@@ -1,0 +1,11 @@
+{
+  "dataset": "ms_CreiLOV",
+  "best_test_spearman": 0.9775635492568276,
+  "seq_len": 119,
+  "fit_min": 620.276332747672,
+  "fit_max": 15686.304864064412,
+  "n": 165428,
+  "epochs": 100,
+  "runtime_s": 255.361398,
+  "smoke": false
+}

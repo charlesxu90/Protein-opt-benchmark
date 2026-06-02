@@ -1,0 +1,11 @@
+{
+  "dataset": "ms_PAB1",
+  "best_test_spearman": 0.9043303064304462,
+  "seq_len": 75,
+  "fit_min": 0.002352258,
+  "fit_max": 2.627942865,
+  "n": 36522,
+  "epochs": 100,
+  "runtime_s": 47.05313,
+  "smoke": false
+}
