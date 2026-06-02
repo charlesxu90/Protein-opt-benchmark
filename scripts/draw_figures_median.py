@@ -16,10 +16,15 @@ Outputs (per --outdir):
 """
 import argparse
 import os
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from utils.plot_style_utils import CAT_PALETTE, GRAY, prettify_ax
 
 _DEFAULT_BASE = "/home/xux/Desktop/AlphaVariant/Benchmark/figures"
 
@@ -49,24 +54,33 @@ mpl.rcParams.update({
     "savefig.dpi": 600,
 })
 
+# Color map from seaborn's colorblind-friendly CAT_PALETTE (utils/plot_style_utils.py).
+# AlphaVariant pinned to a saturated red index so it visually stands out as the
+# shipped method; other methods take adjacent palette entries.
 colors = {
-    "AlphaVariant": "#8B1A1A",
-    "ALDE": "#0072B2",
-    "FLEXS": "#009E73",
-    "ftMLDE": "#E69F00",
-    "CLADE": "#CC79A7",
-    "GreedyWalk": "#56B4E9",
-    "AiCE": "#D55E00",
-    "Random": "#7F7F7F",
-    "delta_cs": "#6A3D9A",
-    "MULTIevolve": "#1F9E89",
-    "EVOLVEpro": "#B26000",
+    "Random":       GRAY,
+    "GreedyWalk":   CAT_PALETTE[0],   # blue
+    "ALDE":         CAT_PALETTE[1],   # orange
+    "FLEXS":        CAT_PALETTE[2],   # green (display label: AdaLead)
+    "AiCE":         CAT_PALETTE[4],   # purple
+    "ftMLDE":       CAT_PALETTE[5],   # brown
+    "CLADE":        CAT_PALETTE[6],   # pink
+    "AlphaVariant": CAT_PALETTE[3],   # red — highlighted method
+    "MULTIevolve":  CAT_PALETTE[7],   # gray
+    "EVOLVEpro":    CAT_PALETTE[8],   # yellow
 }
 HIGHLIGHT_METHODS = {"AlphaVariant"}
 
+# Display-name mapping: FLEXS algorithm is AdaLead (canonical name in the
+# directed-evolution literature); user requested label rename in figures.
+DISPLAY_NAMES = {
+    "FLEXS": "AdaLead",
+}
+
 # Main-figure method allow-list (drops AlphaVariant_base/_SHAP/_PLM/_Hybrid ablation rows).
+# delta_cs excluded per user request (consistently lowest, distracting from main comparison).
 MAIN_METHODS = {"Random", "GreedyWalk", "ALDE", "FLEXS", "AiCE",
-                "ftMLDE", "CLADE", "delta_cs", "AlphaVariant",
+                "ftMLDE", "CLADE", "AlphaVariant",
                 "MULTIevolve", "EVOLVEpro"}
 
 dataset_order = ["4site_GB1", "4site_PhoQ", "4site_TEV", "4site_TRPB"]
@@ -78,10 +92,15 @@ dataset_labels = {
 }
 
 
-def lighten(hex_color, amount=0.12):
-    h = hex_color.lstrip("#")
-    rgb = np.array([int(h[i:i + 2], 16) for i in (0, 2, 4)], dtype=float) / 255.0
+def lighten(color, amount=0.12):
+    """Lighten a color toward white. Accepts hex string or RGB tuple."""
+    rgb = np.asarray(mcolors.to_rgb(color), dtype=float)
     return tuple(rgb + (1 - rgb) * amount)
+
+
+def display_name(method: str) -> str:
+    """Return the figure-display label for a method (e.g. FLEXS → AdaLead)."""
+    return DISPLAY_NAMES.get(method, method)
 
 
 def style_axis(ax, ylim, yticks):
@@ -136,11 +155,16 @@ def plot_metric_figure(metric_med, metric_q1, metric_q3, ylabel, title,
 
         ax.set_title(dataset_labels[dataset], pad=7, fontweight="bold")
         ax.set_xticks(x)
-        ax.set_xticklabels(methods, rotation=60, ha="right", rotation_mode="anchor")
+        # Apply display-name mapping (e.g. FLEXS → AdaLead) for xtick labels only;
+        # internal `methods` list keeps the canonical CSV names for color lookup.
+        display_labels = [display_name(m) for m in methods]
+        ax.set_xticklabels(display_labels, rotation=60, ha="right", rotation_mode="anchor")
+        highlight_display = {display_name(m) for m in HIGHLIGHT_METHODS}
+        highlight_color = mcolors.to_hex(colors["AlphaVariant"])
         for tick in ax.get_xticklabels():
-            if tick.get_text() in HIGHLIGHT_METHODS:
+            if tick.get_text() in highlight_display:
                 tick.set_fontweight("bold")
-                tick.set_color("#8B1A1A")
+                tick.set_color(highlight_color)
         style_axis(ax, ylim, yticks)
         if col == 0:
             ax.set_ylabel(ylabel, labelpad=4)
