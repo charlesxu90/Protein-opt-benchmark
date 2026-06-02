@@ -49,9 +49,9 @@ except ImportError:
 ALL_METHODS = [
     # Established
     'ALDE', 'EvoPlay', 'LatProtRL', 'FLEXS', 'AiCE', 'delta_cs',
-    'AlphaVariant', 'Random', 'GreedyWalk',
+    'alphavariant', 'Random', 'GreedyWalk',
     # Phase 2.1 baselines (now runnable)
-    'EVOLVEpro', 'ftMLDE', 'CLADE', 'MULTIevolve',
+    'EVOLVEpro', 'ftMLDE', 'CLADE', 'MULTIevolve', 'Mu-Protein',
 ]
 ALL_DATASETS = [
     # Original

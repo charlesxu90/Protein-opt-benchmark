@@ -110,7 +110,7 @@ def _scalarized_fitness(df: 'pd.DataFrame') -> np.ndarray:
     if 'blue' in df.columns and 'red' in df.columns:
         b = df['blue'].values.astype(float)
         r = df['red'].values.astype(float)
-        return np.sqrt(np.clip(b, 0, None) * np.clip(r, 0, None))
+        return np.sqrt(np.clip(b, 0, None) * np.clip(r, 0, None))  # Clip negatives to zero before sqrt
     raise ValueError(f"No fitness column and no (blue, red) pair in dataframe; cols={df.columns.tolist()}")
 
 
@@ -388,6 +388,8 @@ class IterativeProteinTrainer:
         features_kind: str = 'onehot',
         wt_seq: Optional[str] = None,
         n_gpt_ensemble: int = 1,
+        plm_zeroshot_pool_frac: float = 1.0,
+        plm_zeroshot_explore_frac: float = 0.1,
     ):
         """Initialize iterative trainer."""
         self.model_config = model_config
@@ -418,6 +420,58 @@ class IterativeProteinTrainer:
         self.wt_seq = wt_seq
         self._esm_extractor = None
         self.n_gpt_ensemble = n_gpt_ensemble
+        self.plm_zeroshot_pool_frac = plm_zeroshot_pool_frac
+        self.plm_zeroshot_explore_frac = plm_zeroshot_explore_frac
+        self.plm_zeroshot_temperature = 0.0  # set by caller; 0 = strict top-K
+        self.plm_active_alpha = 0.0  # set by caller; 0 = off
+        # PLM reward shaping in REINFORCE: total_reward = z(ucb) + lambda(r) * z(plm).
+        # lambda decays per round so early rounds (noisy surrogate) lean on PLM,
+        # late rounds (data-rich surrogate) ignore it.
+        self.plm_reward_lambda = 0.0       # initial lambda; 0 = off
+        self.plm_reward_decay = 'linear'   # 'linear' | 'exponential' | 'none'
+        # Hybrid sampling (UCB + PLM + clustering).
+        self.hybrid_alpha = 0.3            # PLM weight; 0 = pure UCB+clustering
+        self.hybrid_n_clusters = 12        # KMeans K for diversity
+        self.hybrid_alloc = 'weighted'     # 'weighted' | 'roundrobin'
+        self.hybrid_temperature = 1.0      # softmax T for weighted allocator
+        self.hybrid_min_per_cluster = 1    # diversity floor (min slots per cluster)
+        # Staged PLM-fraction sampling: reserve plm_sampling_frac of each batch
+        # for PLM-top picks during the first `plm_sampling_until_round` rounds.
+        self.plm_sampling_frac = 0.0
+        self.plm_sampling_until_round = 0  # rounds (1-indexed); 0 disables
+        # PLM reward shaping cutoff: lambda forced to 0 after this round.
+        self.plm_reward_until_round = 0    # 0 = honor only existing decay schedule
+        # SHAP pruning starts at this round (1-indexed; 0 falls back to min_samples).
+        self.shap_prune_start_round = 0
+        self._esm_mlm = None  # lazy-loaded EsmForMaskedLM for zero-shot scoring
+        self._plm_logprobs = None  # (n_varying, vocab_size) np.float64 — cached WT-marginal log-probs
+        # MutCompute (structure-based) zero-shot scoring as an alternative to ESM-2 PLM.
+        # When use_mutcompute=True the _score_zeroshot(...) dispatcher routes all
+        # PLM-named call sites (reward shaping, sampling fraction, active blending)
+        # through _score_mutcompute(...) instead of _score_zeroshot_esm(...).
+        self.use_mutcompute = False
+        self.mutcompute_offset = None      # None = auto-detect; int = manual override
+        # Ensemble blend of MC + ESM in the zero-shot dispatcher. Only applies when
+        # use_mutcompute=True. α=0.0 → pure MC (Plan C default); α=1.0 → pure ESM;
+        # 0 < α < 1 → blend z(MC) and z(ESM) within the candidate pool.
+        self.zeroshot_blend = 0.0
+        # Plan E: round-staggered override. When zeroshot_early_blend is not None,
+        # the first `zeroshot_early_rounds` RL rounds (round_idx ∈ [1, 1+N]) use
+        # `zeroshot_early_blend` instead of `zeroshot_blend`. Default behaviour:
+        # round 2 (first RL round) = pure ESM, rounds 3+ = pure MC.
+        self.zeroshot_early_blend = None
+        self.zeroshot_early_rounds = 0
+        # Round tracking for round-staggered scoring; set at the start of each train() iteration.
+        self._current_round_idx = 0
+        self._mc_pos_log_probs = None      # cache: dict {var_idx: log-prob dict per AA}
+        self._mc_wt_aas = None             # cache: list of WT AAs at varying positions
+        # SHAP-based per-round alphabet pruning (Savinase-style hotspot reselection).
+        self.shap_prune_alphabet = False
+        self.shap_prune_threshold = 0.0  # keep AAs whose mean SHAP > this
+        self.shap_prune_min_alphabet = 3  # never let a position collapse below this
+        self.shap_prune_min_samples = 50  # skip pruning until enough data
+        self.shap_prune_topk_keep = 10  # AAs of top-K best variants are always retained
+        self._initial_alphabets = None  # immutable copy of round-0 alphabets, for rebound
 
         self.sd = AASeqDictionary()
         set_random_seed(seed)
@@ -509,6 +563,9 @@ class IterativeProteinTrainer:
         """
         if exclude is None:
             exclude = set()
+
+        if self.level == 'plm_zeroshot':
+            return self._zeroshot_init_sample(n_samples, exclude=exclude)
 
         if self.level == 'uniform':
             mask = np.ones(len(self.all_fitness), dtype=bool)
@@ -834,6 +891,500 @@ class IterativeProteinTrainer:
                     feats[to_compute_idx[b + j]] = vec
         return np.stack(feats, axis=0)
 
+    # ---- SHAP-based per-round alphabet pruning ---------------------------
+    _SHAP_AAS = "ACDEFGHIKLMNPQRSTVWY"
+
+    def _update_alphabet_via_shap(self, round_idx: int) -> bool:
+        """
+        Savinase-style hotspot reselection: fit XGBoost on (one-hot mutation
+        features, fitness), compute SHAP, prune per-position AAs whose mean
+        SHAP <= threshold. Always keeps AAs in the top-K best collected
+        variants and enforces a minimum alphabet size per position.
+
+        Combo-encoding assumption: each collected sequence has one AA per
+        varying position (the AACombo column), so we index by `j` in the
+        combo, not the protein-coordinate `p`.
+        """
+        if not self.shap_prune_alphabet or round_idx == 0:
+            return False
+        # Explicit start-round gate overrides the min_samples heuristic when set.
+        start_r = int(getattr(self, 'shap_prune_start_round', 0) or 0)
+        if start_r > 0 and (round_idx + 1) < start_r:
+            logger.info(f"SHAP prune skipped: round {round_idx + 1} < start_round {start_r}")
+            return False
+        n = len(self.collected_seqs)
+        if start_r <= 0 and n < self.shap_prune_min_samples:
+            logger.info(f"SHAP prune skipped: {n} samples < min {self.shap_prune_min_samples}")
+            return False
+        if self._initial_alphabets is None:
+            self._initial_alphabets = [set(a) for a in self.per_position_alphabets]
+
+        try:
+            import xgboost as xgb
+        except Exception as e:
+            logger.warning(f"SHAP prune disabled: xgboost import failed ({e})")
+            return False
+
+        seqs = list(self.collected_seqs)
+        Y = np.array(self.collected_fitness, dtype=np.float32)
+        if float(np.std(Y)) < 1e-8:
+            logger.info("SHAP prune skipped: collected fitness has zero variance")
+            return False
+
+        positions = self.varying_positions
+        AAs = self._SHAP_AAS
+        n_aa = len(AAs)
+        aa2k = {aa: k for k, aa in enumerate(AAs)}
+        X = np.zeros((len(seqs), len(positions) * n_aa), dtype=np.float32)
+        for i, s in enumerate(seqs):
+            for j in range(min(len(positions), len(s))):
+                k = aa2k.get(s[j])
+                if k is not None:
+                    X[i, j * n_aa + k] = 1.0
+
+        try:
+            model = xgb.XGBRegressor(
+                n_estimators=200, max_depth=4,
+                learning_rate=0.08, subsample=0.85, colsample_bytree=0.85,
+                random_state=self.seed, n_jobs=4, verbosity=0,
+            )
+            model.fit(X, Y)
+            # XGBoost native TreeSHAP — avoids the shap-library / xgboost-3.x
+            # leaf-format incompatibility. Last column is the bias term.
+            dmat = xgb.DMatrix(X)
+            contribs = model.get_booster().predict(dmat, pred_contribs=True)
+            shap_vals = contribs[:, :-1]  # (n, n_features)
+        except Exception as e:
+            logger.warning(f"SHAP prune disabled this round: fit/explain failed ({e})")
+            return False
+
+        # AAs to always keep: those in the top-K best collected variants.
+        top_k = min(self.shap_prune_topk_keep, len(seqs))
+        top_indices = np.argsort(-Y)[:top_k]
+        must_keep = [set() for _ in positions]
+        for ti in top_indices:
+            s = seqs[ti]
+            for j in range(min(len(positions), len(s))):
+                must_keep[j].add(s[j])
+
+        sizes_before = [len(self.per_position_alphabets[p]) for p in positions]
+        new_alphabets = [set(a) for a in self.per_position_alphabets]
+        dropped_aas_per_pos = []
+
+        for j, p in enumerate(positions):
+            # Per-AA mean SHAP, conditional on presence at position j.
+            aa_mean_shap = {}
+            for k, aa in enumerate(AAs):
+                col = j * n_aa + k
+                has = X[:, col] > 0
+                if has.sum() >= 2:  # need at least 2 occurrences for stable mean
+                    aa_mean_shap[aa] = float(shap_vals[has, col].mean())
+
+            kept = set()
+            for aa in self._initial_alphabets[p]:
+                if aa in must_keep[j]:
+                    kept.add(aa)
+                elif aa not in aa_mean_shap:
+                    # Not yet observed (or too rare) -> keep so we can still explore it.
+                    kept.add(aa)
+                elif aa_mean_shap[aa] > self.shap_prune_threshold:
+                    kept.add(aa)
+
+            # Enforce minimum alphabet size: top up by mean SHAP if we pruned too aggressively.
+            if len(kept) < self.shap_prune_min_alphabet:
+                ranked = sorted(aa_mean_shap.items(), key=lambda kv: -kv[1])
+                for aa, _ in ranked:
+                    if aa in self._initial_alphabets[p]:
+                        kept.add(aa)
+                    if len(kept) >= self.shap_prune_min_alphabet:
+                        break
+
+            dropped = set(self.per_position_alphabets[p]) - kept
+            dropped_aas_per_pos.append(sorted(dropped))
+            new_alphabets[p] = kept
+
+        self.per_position_alphabets = new_alphabets
+        self.constrain_alphabet = True
+
+        sizes_after = [len(self.per_position_alphabets[p]) for p in positions]
+        logger.info(
+            f"SHAP prune (round {round_idx + 1}, n={n}): "
+            f"sizes {sizes_before} -> {sizes_after}; "
+            f"dropped/pos {dropped_aas_per_pos}"
+        )
+        return True
+
+    # ---- PLM reward-shaping schedule -------------------------------------
+
+    def _plm_reward_lambda_for_round(self, round_idx: int) -> float:
+        """
+        Compute lambda for round_idx (0-indexed). Round 0 is the random init —
+        no RL there. Round 1 = first RL round (highest lambda). The schedule
+        decays so the surrogate dominates by the last round once it has data.
+        """
+        lam0 = float(self.plm_reward_lambda)
+        if lam0 <= 0.0 or round_idx <= 0:
+            return 0.0
+        # Hard cutoff: if plm_reward_until_round is set (1-indexed), force lambda=0
+        # for rounds beyond it. round_idx is 0-indexed so the user-facing round
+        # number is round_idx + 1.
+        until_r = int(getattr(self, 'plm_reward_until_round', 0) or 0)
+        if until_r > 0 and (round_idx + 1) > until_r:
+            return 0.0
+        N = max(self.n_rounds, 2)
+        r = max(round_idx, 1)
+        decay = (self.plm_reward_decay or 'none').lower()
+        if decay == 'linear':
+            denom = max(N - 2, 1)
+            return lam0 * max(0.0, (N - 1 - r) / denom)
+        if decay == 'exponential':
+            return lam0 * (0.5 ** (r - 1))
+        return lam0  # 'none' -> constant
+
+    # ---- Staged PLM-fraction sampling helpers ----------------------------
+
+    def _plm_quota_for_round(self, round_idx: int) -> int:
+        """How many slots of the current batch should come from PLM-top picks."""
+        frac = float(getattr(self, 'plm_sampling_frac', 0.0))
+        until = int(getattr(self, 'plm_sampling_until_round', 0))
+        if frac <= 0.0 or until <= 0:
+            return 0
+        if (round_idx + 1) > until:
+            return 0
+        return int(round(self.batch_size * frac))
+
+    def _plm_top_picks(self, pool, n: int, exclude: set = None):
+        """Top-n combos by PLM WT-marginal score, deduped against `exclude`."""
+        if n <= 0 or not pool:
+            return []
+        if exclude is None:
+            exclude = set()
+        if self.wt_seq is None or not getattr(self, 'varying_positions', None):
+            logger.warning("PLM-quota requested but wt_seq / varying_positions unavailable; skipping")
+            return []
+        seen = set()
+        uniq = []
+        for s in pool:
+            if s not in exclude and s not in seen:
+                uniq.append(s); seen.add(s)
+        if not uniq:
+            return []
+        scores = self._score_zeroshot(uniq)
+        order = np.argsort(-scores)
+        picks = [uniq[i] for i in order[:n]]
+        logger.info(
+            f"  PLM-quota: picked top-{len(picks)} by ESM WT-marginals "
+            f"(score range [{scores[order[:len(picks)]].min():.2f}, {scores[order[0]]:.2f}])"
+        )
+        return picks
+
+    # ---- ESM-2 zero-shot fitness prior (WT-marginal scoring) -------------
+
+    def _get_esm_mlm(self):
+        """Lazy-load EsmForMaskedLM for zero-shot scoring (separate from feature model)."""
+        if self._esm_mlm is not None:
+            return self._esm_mlm
+        from transformers import EsmForMaskedLM, EsmTokenizer
+        model_name = 'facebook/esm2_t12_35M_UR50D'
+        logger.info(f"Loading ESM-2 MLM ({model_name}) for zero-shot scoring...")
+        tok = EsmTokenizer.from_pretrained(model_name)
+        mdl = EsmForMaskedLM.from_pretrained(model_name).eval()
+        dev = torch.device(self.device if torch.cuda.is_available() else 'cpu')
+        mdl = mdl.to(dev)
+        self._esm_mlm = {'tokenizer': tok, 'model': mdl, 'device': dev}
+        return self._esm_mlm
+
+    def _compute_plm_logprobs_matrix(self):
+        """Compute WT-marginal log-prob matrix at varying positions (one forward, cached)."""
+        if self._plm_logprobs is not None:
+            return
+        if self.wt_seq is None or not getattr(self, 'varying_positions', None):
+            raise RuntimeError(
+                "plm_zeroshot requires self.wt_seq and self.varying_positions "
+                "(no wt.fasta / no varying positions detected)."
+            )
+        ext = self._get_esm_mlm()
+        tok, model, dev = ext['tokenizer'], ext['model'], ext['device']
+        positions = self.varying_positions
+
+        wt_arr = list(self.wt_seq)
+        for p in positions:
+            wt_arr[p] = tok.mask_token
+        masked_wt = "".join(wt_arr)
+
+        with torch.no_grad():
+            tokens = tok(masked_wt, return_tensors='pt', padding=True, truncation=True, max_length=1024)
+            tokens = {k: v.to(dev) for k, v in tokens.items()}
+            logits = model(**tokens).logits[0]  # (L+2, V)
+            log_probs = torch.log_softmax(logits, dim=-1).cpu().numpy()
+
+        # Slice to varying positions only: shape (n_varying, V). Offset +1 for [CLS].
+        self._plm_logprobs = log_probs[[p + 1 for p in positions], :]
+        self._plm_aa_to_tok = {aa: tok.convert_tokens_to_ids(aa) for aa in "ACDEFGHIKLMNPQRSTVWY"}
+        self._plm_unk_id = tok.unk_token_id
+
+    # ---- MutCompute (structure-based) zero-shot scoring ------------------
+    _AA_THREE2ONE = {
+        'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F',
+        'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LYS': 'K', 'LEU': 'L',
+        'MET': 'M', 'ASN': 'N', 'PRO': 'P', 'GLN': 'Q', 'ARG': 'R',
+        'SER': 'S', 'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y',
+    }
+
+    def _load_mutcompute(self):
+        """
+        Load and cache MutCompute per-position log-probabilities for the
+        varying positions in this landscape.
+
+        File expected at landscape_dir/mutcompute.csv (column 'pos' uses some
+        PDB-style numbering; column 'wtAA' is three-letter code; per-AA
+        probability columns are 'prALA'...'prTYR' which we rename to A..Y).
+
+        Position numbering may have an offset relative to self.wt_seq's
+        0-indexed positions; we auto-detect it by scanning offsets
+        in [-50, 100] and picking the one whose wtAA column best matches
+        self.wt_seq at the varying positions. The caller may override via
+        self.mutcompute_offset.
+        """
+        if self._mc_pos_log_probs is not None:
+            return
+        if self.wt_seq is None or not getattr(self, 'varying_positions', None):
+            raise RuntimeError(
+                "MutCompute scoring requires self.wt_seq and self.varying_positions; "
+                "wt.fasta or AACombo column may be missing for this dataset."
+            )
+
+        import pandas as pd
+        landscape_dir = os.path.dirname(self.landscape_path)
+        mc_path = os.path.join(landscape_dir, "mutcompute.csv")
+        if not os.path.isfile(mc_path):
+            raise FileNotFoundError(
+                f"--use_mutcompute requested but {mc_path} not present."
+            )
+
+        df = pd.read_csv(mc_path, index_col=0)
+        # Rename pr<THREE> probability columns to single-letter AAs.
+        for three, one in self._AA_THREE2ONE.items():
+            col = 'pr' + three
+            if col in df.columns:
+                df = df.rename(columns={col: one})
+        df['wtAA_1'] = df['wtAA'].map(self._AA_THREE2ONE)
+
+        positions = self.varying_positions  # 0-indexed in self.wt_seq
+        wt_aas = [self.wt_seq[p] for p in positions]
+
+        # Determine offset: pos_in_csv = (0-indexed varying p) + offset.
+        if self.mutcompute_offset is not None:
+            offset = int(self.mutcompute_offset)
+        else:
+            best_offset, best_matches = None, -1
+            for cand in range(-50, 101):
+                m = 0
+                for p, wt_aa in zip(positions, wt_aas):
+                    row = df.loc[df['pos'] == (p + cand)]
+                    if len(row) and row['wtAA_1'].iloc[0] == wt_aa:
+                        m += 1
+                if m > best_matches:
+                    best_matches = m; best_offset = cand
+                if m == len(positions):
+                    break
+            if best_matches < len(positions):
+                logger.warning(
+                    f"MutCompute offset auto-detect: best match {best_matches}/"
+                    f"{len(positions)} varying positions at offset {best_offset}. "
+                    f"WT alignment may be imperfect; proceeding."
+                )
+            offset = best_offset
+        self._mc_offset = offset
+
+        # Per varying position, build {AA: log P} dict from the matching CSV row.
+        AAs = "ACDEFGHIKLMNPQRSTVWY"
+        per_pos = []
+        for p, wt_aa in zip(positions, wt_aas):
+            row = df.loc[df['pos'] == (p + offset)]
+            if len(row) == 0:
+                logger.warning(
+                    f"MutCompute: no row for protein position {p} "
+                    f"(csv pos={p + offset}); contributions at this position will be 0."
+                )
+                per_pos.append(None); continue
+            row = row.iloc[0]
+            if row['wtAA_1'] != wt_aa:
+                logger.warning(
+                    f"MutCompute wtAA mismatch at protein position {p}: "
+                    f"wt.fasta says {wt_aa}, csv says {row['wtAA_1']}; using csv probs anyway."
+                )
+            log_p = {}
+            for aa in AAs:
+                p_aa = float(row.get(aa, 0.0)) if aa in row.index else 0.0
+                log_p[aa] = np.log(max(p_aa, 1e-12))
+            per_pos.append(log_p)
+        self._mc_pos_log_probs = per_pos
+        self._mc_wt_aas = wt_aas
+        logger.info(
+            f"Loaded MutCompute table ({mc_path}); offset={offset}, "
+            f"varying-position WT AAs: {wt_aas}"
+        )
+
+    def _score_mutcompute(self, combo_seqs: List[str]) -> np.ndarray:
+        """
+        MutCompute log-likelihood-ratio score, summed across varying positions.
+
+        For each combo, contribute log(P_mut) - log(P_ref) per varying position
+        where the combo's AA differs from the WT AA. Positions where combo AA
+        equals WT contribute 0. Positions without MutCompute data contribute 0.
+        """
+        self._load_mutcompute()
+        per_pos = self._mc_pos_log_probs
+        wt_aas = self._mc_wt_aas
+        n_pos = len(per_pos)
+
+        scores = np.zeros(len(combo_seqs), dtype=np.float64)
+        for i, combo in enumerate(combo_seqs):
+            s = 0.0
+            for j in range(min(n_pos, len(combo))):
+                if per_pos[j] is None:
+                    continue
+                mut_aa = combo[j]
+                ref_aa = wt_aas[j]
+                if mut_aa == ref_aa:
+                    continue
+                if mut_aa not in per_pos[j]:
+                    s += -10.0  # heavy penalty for non-canonical AA
+                else:
+                    s += per_pos[j][mut_aa] - per_pos[j][ref_aa]
+            scores[i] = s
+        return scores
+
+    def _effective_zeroshot_blend(self) -> float:
+        """
+        Compute the effective blend coefficient α for the *current round*.
+
+        Plan E round-staggered behaviour: when `zeroshot_early_blend` is set
+        and the current RL round (round_idx ∈ {1, 2, …}) falls within the
+        first `zeroshot_early_rounds` of those, use `zeroshot_early_blend`
+        instead of the default `zeroshot_blend`. Round 0 is the random init
+        (no RL); scoring there falls back to default `zeroshot_blend`.
+        """
+        early_alpha = getattr(self, "zeroshot_early_blend", None)
+        n_early = int(getattr(self, "zeroshot_early_rounds", 0) or 0)
+        r = int(getattr(self, "_current_round_idx", 0))
+        if early_alpha is not None and n_early > 0 and 1 <= r <= n_early:
+            return float(early_alpha)
+        return float(getattr(self, "zeroshot_blend", 0.0) or 0.0)
+
+    def _score_zeroshot(self, seqs: List[str]) -> np.ndarray:
+        """
+        Dispatch wrapper: route to MutCompute, ESM-2, or an ensemble blend.
+
+        - use_mutcompute=False → pure ESM-2 (Plan A/B path).
+        - use_mutcompute=True, effective α=0 → pure MC (Plan C default).
+        - use_mutcompute=True, effective α=1 → pure ESM-2 (=Plan B PLM-reward).
+        - 0 < effective α < 1 → blend z(MC) and z(ESM): the two scores are
+          z-normalised within the candidate pool, then linearly combined as
+          `(1−α)·z(MC) + α·z(ESM)`. Plan D D1 ensemble path.
+        - Plan E: effective α can switch per round via _effective_zeroshot_blend.
+        """
+        if not getattr(self, "use_mutcompute", False):
+            return self._score_zeroshot_esm(seqs)
+        a = self._effective_zeroshot_blend()
+        a = max(0.0, min(1.0, a))
+        if a <= 0.0:
+            return self._score_mutcompute(seqs)
+        if a >= 1.0:
+            return self._score_zeroshot_esm(seqs)
+        mc = self._score_mutcompute(seqs)
+        esm = self._score_zeroshot_esm(seqs)
+        def _z(x):
+            x = np.asarray(x, dtype=np.float64)
+            s = float(np.std(x))
+            return (x - float(np.mean(x))) / s if s > 1e-12 else np.zeros_like(x)
+        return (1.0 - a) * _z(mc) + a * _z(esm)
+
+    def _score_zeroshot_esm(self, combo_seqs: List[str]) -> np.ndarray:
+        """
+        WT-marginal zero-shot fitness prior (Meier et al., 2021).
+
+        Independent-position approximation: ignores epistasis between varying
+        positions but is O(1) forward passes regardless of pool size (cached
+        across calls via self._plm_logprobs).
+        """
+        self._compute_plm_logprobs_matrix()
+        log_probs = self._plm_logprobs  # (n_varying, V)
+        aa_to_tok = self._plm_aa_to_tok
+        unk_id = self._plm_unk_id
+
+        scores = np.zeros(len(combo_seqs), dtype=np.float64)
+        for i, combo in enumerate(combo_seqs):
+            s = 0.0
+            for j in range(min(len(combo), log_probs.shape[0])):
+                tid = aa_to_tok.get(combo[j])
+                if tid is None or tid == unk_id:
+                    s += -10.0
+                else:
+                    s += float(log_probs[j, tid])
+            scores[i] = s
+        return scores
+
+    def _zeroshot_init_sample(self, n_samples: int, exclude: set = None) -> List[str]:
+        """Select the initial batch by ESM-2 WT-marginal score, with a small random tail."""
+        if exclude is None:
+            exclude = set()
+        available_indices = [i for i, s in enumerate(self.all_seqs) if s not in exclude]
+        if len(available_indices) <= n_samples:
+            return [self.all_seqs[i] for i in available_indices]
+
+        # Optionally subsample the pool to cap ESM cost on huge libraries.
+        pool = available_indices
+        frac = float(self.plm_zeroshot_pool_frac)
+        if frac < 1.0:
+            target = max(int(len(pool) * frac), n_samples * 10)
+            target = min(target, len(pool))
+            pool = list(np.random.choice(pool, size=target, replace=False))
+
+        pool_seqs = [self.all_seqs[i] for i in pool]
+        _src = "MutCompute" if getattr(self, "use_mutcompute", False) else "ESM-2 WT-marginals"
+        logger.info(f"plm_zeroshot: scoring {len(pool_seqs)} candidates with {_src}...")
+        scores = self._score_zeroshot(pool_seqs)
+
+        explore_n = int(round(n_samples * float(self.plm_zeroshot_explore_frac)))
+        score_n = n_samples - explore_n
+
+        T = float(self.plm_zeroshot_temperature)
+        if T > 0.0 and score_n > 0:
+            # Temperature-softmax sampling without replacement (Gumbel top-k).
+            logits = scores / T
+            logits = logits - logits.max()
+            g = -np.log(-np.log(np.random.rand(len(pool_seqs)).clip(1e-12, 1 - 1e-12)))
+            keys = logits + g
+            score_indices = np.argpartition(-keys, score_n - 1)[:score_n]
+            score_sel = [pool_seqs[k] for k in score_indices]
+            score_summary = (
+                f"T={T}; "
+                f"selected_score_range [{scores[score_indices].min():.2f}, {scores[score_indices].max():.2f}]"
+            )
+        else:
+            order = np.argsort(-scores)
+            score_sel = [pool_seqs[k] for k in order[:score_n]]
+            score_summary = (
+                f"top-{score_n}; "
+                f"selected_score_range [{scores[order[:score_n]].min():.2f}, {scores[order[0]]:.2f}]"
+            )
+
+        selected = list(score_sel)
+        if explore_n > 0:
+            sel_set = set(selected)
+            remaining = [s for s in pool_seqs if s not in sel_set]
+            if remaining:
+                idx = np.random.choice(len(remaining), size=min(explore_n, len(remaining)), replace=False)
+                selected.extend(remaining[k] for k in idx)
+
+        logger.info(
+            f"plm_zeroshot: PLM-pick={score_n} ({score_summary}), random={len(selected) - score_n}; "
+            f"all-pool score_range [{scores.min():.2f}, {scores.max():.2f}]"
+        )
+        return selected[:n_samples]
+
     # ---- CNN surrogate (FLEXS-style ensemble for uncertainty) -------------
     _AMINO_ACIDS_ORD = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -1055,6 +1606,24 @@ class IterativeProteinTrainer:
         else:
             acquisition_scores = mu + xi * sigma
 
+        # Optional PLM bias: z-normalize both signals so alpha is unitless.
+        alpha = float(getattr(self, 'plm_active_alpha', 0.0) or 0.0)
+        if alpha > 0.0 and self.wt_seq is not None and getattr(self, 'varying_positions', None):
+            plm_scores = self._score_zeroshot(unique_seqs)
+
+            def _z(x):
+                m, s = float(np.mean(x)), float(np.std(x))
+                return (x - m) / s if s > 1e-12 else np.zeros_like(x)
+
+            blended = _z(acquisition_scores) + alpha * _z(plm_scores)
+            corr = float(np.corrcoef(acquisition_scores, plm_scores)[0, 1]) if len(unique_seqs) > 1 else 0.0
+            logger.info(
+                f"Active sampling: PLM bias alpha={alpha}, "
+                f"corr(acq, plm)={corr:+.3f}, "
+                f"plm range [{plm_scores.min():.2f}, {plm_scores.max():.2f}]"
+            )
+            acquisition_scores = blended
+
         # Select top n_samples
         top_indices = np.argsort(acquisition_scores)[-n_samples:][::-1]
         selected_seqs = [unique_seqs[i] for i in top_indices]
@@ -1070,7 +1639,21 @@ class IterativeProteinTrainer:
         return loss
 
     def sample_from_model(self, model: GPT, num_samples: int) -> List[str]:
-        """Sample sequences from GPT model."""
+        """Sample sequences from GPT model, then snap to the library subspace.
+
+        Without this snap step, GPT generates over all 24 tokens × seq_len
+        positions, which for full-length proteins (e.g. 233-aa eqFP611) produces
+        sequences that exist nowhere in the enumerated landscape. The oracle
+        then returns fitness=0 for every proposal and RL provides no signal.
+
+        We mirror the "restore full sequence" logic from
+        `popgen/model/agent_trainer.py::train` (around line 212): keep the
+        GPT's choice at hotspot positions when it lies in the observed
+        per-position alphabet, otherwise pick a random allowed AA. Non-hotspot
+        positions are set to the wild-type reference. For combinatorial
+        landscapes where every position varies (e.g. 4-site GB1) this is
+        a no-op.
+        """
         model.eval()
         sequences = []
         x = rnn_start_token_vector(num_samples, self.device)
@@ -1085,11 +1668,231 @@ class IterativeProteinTrainer:
                 sequences.append(sampled_idx.view(-1, 1))
                 x = torch.cat(sequences, 1)
 
-        # Convert to sequences
         token_seqs = torch.cat(sequences, 1)
         aa_seqs = self.sd.matrix_to_seqs(token_seqs)
 
+        tmpl = getattr(self, "template", None)
+        if tmpl is not None and getattr(tmpl, "positions", None):
+            ref = tmpl.refSeq
+            # positions in hotspots.csv are 1-indexed; pos_aa_candidates is a
+            # dict keyed by 1-based position with lists of observed AAs.
+            allowed = {(p - 1): list(tmpl.pos_aa_candidates.get(p, []))
+                       for p in tmpl.positions}
+            hotspot0 = sorted(allowed.keys())
+            rng = np.random
+            snapped: List[str] = []
+            for s in aa_seqs:
+                if len(s) != len(ref):
+                    snapped.append(s)
+                    continue
+                chars = list(ref)
+                for pos0 in hotspot0:
+                    cands = allowed.get(pos0) or []
+                    gpt_aa = s[pos0]
+                    if cands:
+                        chars[pos0] = gpt_aa if gpt_aa in cands \
+                                      else cands[rng.randint(len(cands))]
+                snapped.append(''.join(chars))
+            aa_seqs = snapped
+
         return aa_seqs
+
+    def _hybrid_sample(
+        self,
+        seqs: List[str],
+        n_samples: int,
+        exclude_seqs: set = None,
+        acquisition: str = 'ts',
+        xi: float = 4.0,
+    ) -> List[str]:
+        """
+        Hybrid selection combining UCB, PLM, and clustering.
+
+        Algorithm:
+        1. Compute per-candidate score = z(ucb_or_TS) + alpha * z(plm).
+        2. KMeans cluster the candidate pool by one-hot features.
+        3. Within each cluster, sort by combined score (descending).
+        4. Distribute n_samples slots across clusters in round-robin, taking
+           the next-best candidate from each cluster until quota is filled.
+
+        This ensures (a) diverse coverage across sequence-space basins via
+        clustering, (b) within-basin quality via the blended score, and
+        (c) biological plausibility via the PLM term.
+        """
+        from sklearn.cluster import KMeans
+
+        if exclude_seqs is None:
+            exclude_seqs = set()
+        seen = set()
+        unique_seqs = []
+        for s in seqs:
+            if s not in exclude_seqs and s not in seen:
+                unique_seqs.append(s)
+                seen.add(s)
+        if len(unique_seqs) == 0:
+            return []
+        if len(unique_seqs) <= n_samples:
+            return unique_seqs
+
+        # --- Surrogate score ---
+        mu, sigma, all_predictions = self._predict_surrogate_with_samples(unique_seqs)
+        if acquisition == 'ts':
+            n_seqs = len(unique_seqs)
+            n_models = all_predictions.shape[1]
+            idx_m = np.random.randint(0, n_models, size=n_seqs)
+            ucb_scores = np.array([all_predictions[i, idx_m[i]] for i in range(n_seqs)])
+        elif acquisition == 'ucb':
+            ucb_scores = mu + xi * sigma
+        elif acquisition == 'ei':
+            best_so_far = max(self.collected_fitness) if self.collected_fitness else 0
+            from scipy.stats import norm
+            z_arr = (mu - best_so_far) / (sigma + 1e-8)
+            ucb_scores = (mu - best_so_far) * norm.cdf(z_arr) + sigma * norm.pdf(z_arr)
+        else:
+            ucb_scores = mu + xi * sigma
+
+        # --- PLM score (cached after first call) ---
+        alpha = float(self.hybrid_alpha)
+        plm_scores = None
+        if alpha > 0.0 and self.wt_seq is not None and getattr(self, 'varying_positions', None):
+            try:
+                plm_scores = self._score_zeroshot(unique_seqs)
+            except Exception as e:
+                logger.warning(f"Hybrid: PLM scoring failed ({e}); falling back to alpha=0")
+                plm_scores = None
+
+        def _z(x):
+            s = float(np.std(x))
+            return (x - float(np.mean(x))) / s if s > 1e-12 else np.zeros_like(x)
+        if plm_scores is not None:
+            combined = _z(ucb_scores) + alpha * _z(plm_scores)
+            corr = float(np.corrcoef(ucb_scores, plm_scores)[0, 1]) if len(unique_seqs) > 1 else 0.0
+        else:
+            combined = ucb_scores
+            corr = 0.0
+
+        # --- Clustering on one-hot features ---
+        try:
+            from popscorer.fitness.aa_onehot_pred.embed import seqs2feat
+            X = seqs2feat(unique_seqs)
+        except Exception:
+            # Fallback: build one-hot here directly.
+            AAs = "ACDEFGHIKLMNPQRSTVWY"
+            aa2 = {a: i for i, a in enumerate(AAs)}
+            L = len(unique_seqs[0])
+            X = np.zeros((len(unique_seqs), L * 20), dtype=np.float32)
+            for i, s in enumerate(unique_seqs):
+                for j, a in enumerate(s):
+                    k = aa2.get(a)
+                    if k is not None:
+                        X[i, j * 20 + k] = 1.0
+
+        K = int(self.hybrid_n_clusters)
+        K = max(1, min(K, len(unique_seqs) // 2, n_samples))
+        kmeans = KMeans(n_clusters=K, random_state=self.seed, n_init=10)
+        labels = kmeans.fit_predict(X)
+
+        # Group + per-cluster sort by combined score (desc).
+        clusters = [[] for _ in range(K)]
+        for i, lab in enumerate(labels):
+            clusters[lab].append(i)
+        for cl in clusters:
+            cl.sort(key=lambda i: -combined[i])
+
+        alloc_mode = getattr(self, 'hybrid_alloc', 'weighted')
+        picks = []
+
+        if alloc_mode == 'roundrobin':
+            # Legacy: equal slots per cluster, take top-i from each in round-robin.
+            cluster_order = sorted(range(K),
+                                   key=lambda k: -(combined[clusters[k][0]] if clusters[k] else -np.inf))
+            ptrs = [0] * K
+            while len(picks) < n_samples:
+                progressed = False
+                for k in cluster_order:
+                    if ptrs[k] < len(clusters[k]):
+                        picks.append(unique_seqs[clusters[k][ptrs[k]]])
+                        ptrs[k] += 1
+                        progressed = True
+                        if len(picks) >= n_samples:
+                            break
+                if not progressed:
+                    break
+            allocation_summary = [n_samples // K] * K
+
+        else:
+            # Weighted slot allocation: number of picks per cluster ∝
+            # softmax(cluster_max_score / T), with a min-per-cluster floor so
+            # every cluster contributes at least one pick (diversity guarantee).
+            T = max(float(getattr(self, 'hybrid_temperature', 1.0)), 1e-6)
+            min_per = int(getattr(self, 'hybrid_min_per_cluster', 1))
+
+            # Cluster quality = max combined score among cluster members.
+            non_empty = [k for k in range(K) if clusters[k]]
+            quality = np.full(K, -np.inf)
+            for k in non_empty:
+                quality[k] = combined[clusters[k][0]]
+
+            # Reserve min_per slots per non-empty cluster, distribute rest.
+            n_eff = len(non_empty)
+            reserved = min(min_per * n_eff, n_samples)
+            remaining = max(n_samples - reserved, 0)
+
+            slots = np.zeros(K, dtype=int)
+            for k in non_empty:
+                slots[k] = min_per
+
+            if remaining > 0 and n_eff > 0:
+                q = quality.copy()
+                q[~np.isfinite(q)] = -1e9
+                q = q[non_empty] / T
+                q = q - q.max()
+                p = np.exp(q)
+                p = p / p.sum()
+                raw = remaining * p
+                add = np.floor(raw).astype(int)
+                leftover = remaining - int(add.sum())
+                if leftover > 0:
+                    fracs = raw - add
+                    order = np.argsort(-fracs)
+                    for j in range(leftover):
+                        add[order[j % n_eff]] += 1
+                for idx, k in enumerate(non_empty):
+                    slots[k] += int(add[idx])
+
+            # Cap by cluster size, redistribute the deficit to next-best clusters.
+            deficit = 0
+            for k in non_empty:
+                if slots[k] > len(clusters[k]):
+                    deficit += slots[k] - len(clusters[k])
+                    slots[k] = len(clusters[k])
+            if deficit > 0:
+                rank = sorted(non_empty, key=lambda k: -quality[k])
+                idx = 0
+                while deficit > 0 and idx < 10 * len(rank):
+                    k = rank[idx % len(rank)]
+                    if slots[k] < len(clusters[k]):
+                        slots[k] += 1
+                        deficit -= 1
+                    idx += 1
+
+            # Take top-slots[k] from each cluster.
+            for k in range(K):
+                for j in range(int(slots[k])):
+                    if j < len(clusters[k]):
+                        picks.append(unique_seqs[clusters[k][j]])
+            picks = picks[:n_samples]
+            allocation_summary = slots.tolist()
+
+        cluster_sizes = [len(c) for c in clusters]
+        logger.info(
+            f"Hybrid sampling: K={K}, alpha={alpha}, alloc={alloc_mode}, "
+            f"corr(ucb,plm)={corr:+.3f}; cluster sizes (top-5) "
+            f"{sorted(cluster_sizes, reverse=True)[:5]}; "
+            f"slots (top-5) {sorted(allocation_summary, reverse=True)[:5]}; "
+            f"selected {len(picks)}"
+        )
+        return picks
 
     def _cluster_sample(
         self,
@@ -1270,24 +2073,54 @@ class IterativeProteinTrainer:
                 token_seqs.append(tokens)
             token_tensor = torch.LongTensor(token_seqs).to(self.device)
 
-            # Get agent likelihood
+            # Get agent likelihood — single teacher-forced forward pass instead
+            # of the position-by-position loop. The two are mathematically
+            # equivalent: for each position pos in [0, L-1], log p(token_pos |
+            # start, token_0..pos-1) is the logit at sequence position `pos`
+            # when the model is fed (start, token_0..pos-1, ..., token_L-2).
+            # The loop variant was O(L²) in activation memory because all L
+            # forward passes' activations were retained for backward; the
+            # single pass is O(L) and fits in 4-layer 233-context GPU memory.
             self.agent_model.train()
-            sample_log_probs = torch.zeros(len(unique_seqs)).to(self.device)
-            x = rnn_start_token_vector(len(unique_seqs), self.device)
-
-            for pos in range(token_tensor.size(1)):
-                logits, _ = self.agent_model(x)
-                probs = F.softmax(logits[:, -1, :], dim=-1)
-                log_probs = probs.log()
-                sample_log_probs += self.nll_loss(log_probs, token_tensor[:, pos])
-                x = torch.cat([x, token_tensor[:, pos:pos+1]], dim=1)
-
+            start = rnn_start_token_vector(len(unique_seqs), self.device)
+            x_full = torch.cat([start, token_tensor[:, :-1]], dim=1)
+            logits, _ = self.agent_model(x_full)
+            log_probs = F.log_softmax(logits, dim=-1)
+            # nll_loss(p, target) returns -p[target], so sum across positions
+            # to get the same sample_log_probs the loop produced (which was
+            # actually a per-sample sum of NLLs, despite the variable name).
+            sample_log_probs = -log_probs.gather(
+                2, token_tensor.unsqueeze(-1)
+            ).squeeze(-1).sum(dim=1)
             agent_likelihoods = sample_log_probs
             prior_likelihoods = self.likelihood(self.prior_model, token_tensor)
 
             # Get surrogate predictions
             ucb_scores, raw_scores = self._predict_surrogate(unique_seqs)
-            scores = torch.from_numpy(ucb_scores).float().to(self.device)
+
+            # PLM reward shaping: blend in z(plm_log_prob) with a round-decayed weight.
+            lam_round = self._plm_reward_lambda_for_round(round_idx)
+            if lam_round > 0.0 and self.wt_seq is not None and getattr(self, 'varying_positions', None):
+                try:
+                    plm_scores = self._score_zeroshot(unique_seqs)
+                    def _z(x):
+                        s = float(np.std(x))
+                        return (x - float(np.mean(x))) / s if s > 1e-12 else np.zeros_like(x)
+                    blended = _z(ucb_scores) + lam_round * _z(plm_scores)
+                    reward_scores = blended
+                    if step == 0:
+                        corr = float(np.corrcoef(ucb_scores, plm_scores)[0, 1]) if len(unique_seqs) > 1 else 0.0
+                        logger.info(
+                            f"  PLM reward shaping (round {round_idx + 1}): "
+                            f"lambda={lam_round:.3f}, corr(ucb,plm)={corr:+.3f}, "
+                            f"plm_range [{plm_scores.min():.2f}, {plm_scores.max():.2f}]"
+                        )
+                except Exception as e:
+                    logger.warning(f"PLM reward shaping failed this step ({e}); falling back to ucb only")
+                    reward_scores = ucb_scores
+            else:
+                reward_scores = ucb_scores
+            scores = torch.from_numpy(np.ascontiguousarray(reward_scores)).float().to(self.device)
 
             # Collect sequences
             for seq, pred in zip(unique_seqs, raw_scores):
@@ -1422,6 +2255,8 @@ class IterativeProteinTrainer:
         for round_idx in range(self.n_rounds):
             round_start = datetime.now()
             is_last_round = (round_idx == self.n_rounds - 1)
+            # Track round for round-staggered zero-shot blending (Plan E).
+            self._current_round_idx = round_idx
 
             logger.info(f"\n{'='*50}")
             logger.info(f"Round {round_idx + 1}/{self.n_rounds}" + (" (LAST)" if is_last_round else ""))
@@ -1439,15 +2274,26 @@ class IterativeProteinTrainer:
                 # Round 1: Initial sampling from landscape
                 collected_set = set(self.collected_seqs)
 
+                # Optional PLM-quota: reserve top-by-PLM picks from the entire library.
+                plm_n = self._plm_quota_for_round(round_idx)
+                plm_picks = self._plm_top_picks(self.all_seqs, plm_n, exclude=collected_set)
+                remaining = self.batch_size - len(plm_picks)
+                excl = collected_set | set(plm_picks)
+
                 if self.sampling_strategy == 'cluster':
-                    logger.info("Cluster-based initialization from landscape...")
-                    new_seqs = self._cluster_init_sample(self.batch_size, exclude=collected_set)
+                    logger.info(f"Cluster-based initialization (+{len(plm_picks)} PLM-quota)...")
+                    rest = self._cluster_init_sample(remaining, exclude=excl) if remaining > 0 else []
                 else:
-                    logger.info("Random sampling from landscape...")
-                    new_seqs = self._sample_initial_seqs(self.batch_size, exclude=collected_set)
+                    logger.info(f"Random sampling from landscape (+{len(plm_picks)} PLM-quota)...")
+                    rest = self._sample_initial_seqs(remaining, exclude=excl) if remaining > 0 else []
+                new_seqs = list(plm_picks) + list(rest)
 
             else:
-                # Rounds 2+: Finetune prior, train surrogate, run RL
+                # Rounds 2+: optionally prune the per-position alphabet via SHAP,
+                # then finetune prior, train surrogate, run RL.
+                if self.shap_prune_alphabet:
+                    self._update_alphabet_via_shap(round_idx)
+
                 if self.finetune_prior:
                     logger.info(f"Step 1: Finetuning prior on {len(self.collected_seqs)} sequences...")
                     self._finetune_prior_model(
@@ -1474,26 +2320,45 @@ class IterativeProteinTrainer:
 
                 collected_set = set(self.collected_seqs)
 
+                # Optional PLM-quota: take top-by-PLM picks from the RL pool.
+                plm_n = self._plm_quota_for_round(round_idx)
+                plm_picks = self._plm_top_picks(generated_seqs, plm_n, exclude=collected_set)
+                remaining = self.batch_size - len(plm_picks)
+                excl = collected_set | set(plm_picks)
+
                 if self.sampling_strategy == 'cluster':
                     apply_cutoff = not is_last_round
-                    logger.info(f"Cluster sampling from RL variants (cutoff={apply_cutoff})...")
-                    new_seqs = self._cluster_sample(
+                    logger.info(f"Cluster sampling (+{len(plm_picks)} PLM-quota, cutoff={apply_cutoff})...")
+                    rest = self._cluster_sample(
                         seqs=generated_seqs,
                         predicted_fitness=generated_fitness,
-                        n_samples=self.batch_size,
-                        exclude_seqs=collected_set,
+                        n_samples=remaining,
+                        exclude_seqs=excl,
                         apply_cutoff=apply_cutoff,
-                    )
+                    ) if remaining > 0 else []
+                    new_seqs = list(plm_picks) + list(rest)
 
                 elif self.sampling_strategy == 'active':
-                    logger.info(f"Active sampling from RL variants ({self.acquisition})...")
-                    new_seqs = self._active_sample(
+                    logger.info(f"Active sampling (+{len(plm_picks)} PLM-quota, {self.acquisition})...")
+                    rest = self._active_sample(
                         seqs=generated_seqs,
-                        n_samples=self.batch_size,
-                        exclude_seqs=collected_set,
+                        n_samples=remaining,
+                        exclude_seqs=excl,
                         acquisition=self.acquisition,
                         xi=self.xi,
-                    )
+                    ) if remaining > 0 else []
+                    new_seqs = list(plm_picks) + list(rest)
+
+                elif self.sampling_strategy == 'hybrid':
+                    logger.info(f"Hybrid sampling (+{len(plm_picks)} PLM-quota)...")
+                    rest = self._hybrid_sample(
+                        seqs=generated_seqs,
+                        n_samples=remaining,
+                        exclude_seqs=excl,
+                        acquisition=self.acquisition,
+                        xi=self.xi,
+                    ) if remaining > 0 else []
+                    new_seqs = list(plm_picks) + list(rest)
 
                 else:
                     raise ValueError(f"Unknown sampling strategy: {self.sampling_strategy}")
@@ -1698,6 +2563,31 @@ def run_single_experiment(
     constrain_alphabet: bool = False,
     features_kind: str = 'onehot',
     n_gpt_ensemble: int = 1,
+    plm_zeroshot_pool_frac: float = 1.0,
+    plm_zeroshot_explore_frac: float = 0.1,
+    plm_zeroshot_temperature: float = 0.0,
+    plm_active_alpha: float = 0.0,
+    shap_prune_alphabet: bool = False,
+    shap_prune_threshold: float = 0.0,
+    shap_prune_min_alphabet: int = 3,
+    shap_prune_min_samples: int = 50,
+    shap_prune_topk_keep: int = 10,
+    plm_reward_lambda: float = 0.0,
+    plm_reward_decay: str = 'linear',
+    hybrid_alpha: float = 0.3,
+    hybrid_n_clusters: int = 12,
+    hybrid_alloc: str = 'weighted',
+    hybrid_temperature: float = 1.0,
+    hybrid_min_per_cluster: int = 1,
+    plm_sampling_frac: float = 0.0,
+    plm_sampling_until_round: int = 0,
+    plm_reward_until_round: int = 0,
+    shap_prune_start_round: int = 0,
+    use_mutcompute: bool = False,
+    mutcompute_offset: Optional[int] = None,
+    zeroshot_blend: float = 0.0,
+    zeroshot_early_blend: Optional[float] = None,
+    zeroshot_early_rounds: int = 0,
 ) -> Dict[str, Any]:
     """Run a single AlphaVariant iterative optimization experiment on any dataset."""
 
@@ -1847,7 +2737,32 @@ def run_single_experiment(
         features_kind=features_kind,
         wt_seq=wildtype,
         n_gpt_ensemble=n_gpt_ensemble,
+        plm_zeroshot_pool_frac=plm_zeroshot_pool_frac,
+        plm_zeroshot_explore_frac=plm_zeroshot_explore_frac,
     )
+    trainer.plm_zeroshot_temperature = plm_zeroshot_temperature
+    trainer.plm_active_alpha = plm_active_alpha
+    trainer.shap_prune_alphabet = shap_prune_alphabet
+    trainer.shap_prune_threshold = shap_prune_threshold
+    trainer.shap_prune_min_alphabet = shap_prune_min_alphabet
+    trainer.shap_prune_min_samples = shap_prune_min_samples
+    trainer.shap_prune_topk_keep = shap_prune_topk_keep
+    trainer.plm_reward_lambda = plm_reward_lambda
+    trainer.plm_reward_decay = plm_reward_decay
+    trainer.hybrid_alpha = hybrid_alpha
+    trainer.hybrid_n_clusters = hybrid_n_clusters
+    trainer.hybrid_alloc = hybrid_alloc
+    trainer.hybrid_temperature = hybrid_temperature
+    trainer.hybrid_min_per_cluster = hybrid_min_per_cluster
+    trainer.plm_sampling_frac = plm_sampling_frac
+    trainer.plm_sampling_until_round = plm_sampling_until_round
+    trainer.plm_reward_until_round = plm_reward_until_round
+    trainer.shap_prune_start_round = shap_prune_start_round
+    trainer.use_mutcompute = use_mutcompute
+    trainer.mutcompute_offset = mutcompute_offset
+    trainer.zeroshot_blend = zeroshot_blend
+    trainer.zeroshot_early_blend = zeroshot_early_blend
+    trainer.zeroshot_early_rounds = zeroshot_early_rounds
 
     # Run iterative training
     start_time = datetime.now()
@@ -1875,6 +2790,15 @@ def run_single_experiment(
             'n_rounds': n_rounds,
             'n_steps_per_round': n_steps_per_round,
             'sigma': effective_sigma,
+            'prior_model_path': prior_model_path,
+            'finetune_prior': finetune_prior,
+            'constrain_alphabet': constrain_alphabet,
+            'features': features_kind,
+            'surrogate': surrogate_kind,
+            'sampling': sampling_strategy,
+            'acquisition': acquisition,
+            'level': level,
+            'n_hotspot_positions': len(positions),
         }
     }
 
@@ -1897,6 +2821,24 @@ def run_single_experiment(
         result['metrics'] = metrics_result.to_dict()
         result['fitness_trajectory'] = metrics_result.fitness_trajectory
         result['regret_trajectory'] = metrics_result.regret_trajectory
+
+        # Map generated sequences -> landscape row indices (in query order across
+        # rounds) so MOO aggregators can recover (blue, red) tuples via
+        # `metrics["queried_indices"]`. Sequences not found in the enumerated
+        # landscape (e.g. unconstrained generation outside the library) are skipped.
+        try:
+            _seq_to_idx = {s: i for i, s in enumerate(all_landscape_seqs)}
+            _queried_indices = [_seq_to_idx[s] for s in all_seqs if s in _seq_to_idx]
+            result['metrics']['queried_indices'] = _queried_indices
+            result['metrics']['n_in_landscape'] = len(_queried_indices)
+            result['metrics']['n_off_landscape'] = len(all_seqs) - len(_queried_indices)
+            logger.info(
+                f"queried_indices: {len(_queried_indices)}/{len(all_seqs)} "
+                f"generated sequences found in landscape "
+                f"({len(all_seqs) - len(_queried_indices)} off-library)"
+            )
+        except Exception as _e:
+            logger.warning(f"Could not record queried_indices: {_e}")
 
         # Print summary
         print("\n" + "-"*60)
@@ -2086,9 +3028,99 @@ Examples:
                         help="Number of GPT ensemble members per round (bagging). Each member trains "
                         "n_steps_per_round REINFORCE steps from a fresh copy of the prior with a "
                         "different sub-seed; proposals are merged into one pool.")
-    parser.add_argument("--level", type=str, choices=['uniform', 'medium', 'hard'], default='uniform',
+    parser.add_argument("--level", type=str,
+                       choices=['uniform', 'medium', 'hard', 'plm_zeroshot'], default='uniform',
                        help="Difficulty level for initial sampling (default: uniform — "
-                            "matches all other benchmark methods; non-uniform levels are a fitness leak)")
+                            "matches all other benchmark methods; non-uniform levels are a fitness leak). "
+                            "'plm_zeroshot' uses ESM-2 WT-marginal log-likelihood as a zero-shot fitness "
+                            "prior to bias the first batch toward biologically plausible variants — "
+                            "intended for noisy / nearly-flat initial-sample regimes (e.g. TEV).")
+    parser.add_argument("--plm_zeroshot_pool_frac", type=float, default=1.0,
+                       help="When --level plm_zeroshot, fraction of the library to score with ESM-2 "
+                            "before picking top-batch_size. Default 1.0 = score everything; lower it "
+                            "(e.g. 0.25) for very large libraries to cap ESM cost.")
+    parser.add_argument("--plm_zeroshot_explore_frac", type=float, default=0.1,
+                       help="Fraction of the initial batch reserved for uniform-random exploration "
+                            "alongside the PLM-top selection (default 0.1 -> 10%% random for diversity).")
+    parser.add_argument("--plm_zeroshot_temperature", type=float, default=0.0,
+                       help="If >0, sample initial PLM-pick from softmax(score/T) via Gumbel top-k "
+                            "instead of strict top-K (0 = strict top-K). Higher T = more diverse / "
+                            "more weight on low-PLM candidates.")
+    parser.add_argument("--plm_active_alpha", type=float, default=0.0,
+                       help="If >0, blend ESM-2 WT-marginal log-prob into the active-sampling "
+                            "acquisition score in rounds 2+: combined = z(acq) + alpha * z(plm). "
+                            "Both terms are z-normalized within the candidate pool so alpha is "
+                            "unitless. 0 = off.")
+    parser.add_argument("--plm_reward_lambda", type=float, default=0.0,
+                       help="If >0, blend PLM log-prob into REINFORCE reward at every RL step: "
+                            "reward = z(ucb) + lambda(round) * z(plm). 0 = off.")
+    parser.add_argument("--plm_reward_decay", type=str, default='linear',
+                       choices=['linear', 'exponential', 'none'],
+                       help="Schedule for lambda across rounds (linear default): linear ramps "
+                            "to 0 at the last RL round; exponential halves each round; none = constant.")
+    parser.add_argument("--hybrid_alpha", type=float, default=0.3,
+                       help="Weight for PLM term in hybrid sampling: score=z(ucb)+alpha*z(plm). "
+                            "0 = pure UCB + clustering.")
+    parser.add_argument("--hybrid_n_clusters", type=int, default=12,
+                       help="Number of KMeans clusters for diversity in hybrid sampling.")
+    parser.add_argument("--hybrid_alloc", type=str, default='weighted',
+                       choices=['weighted', 'roundrobin'],
+                       help="How to allocate the 96 batch slots across clusters. "
+                            "'weighted' (default): slots_k ∝ softmax(cluster_max_score / T) with "
+                            "a min-per-cluster floor — concentrates picks on high-quality clusters "
+                            "while preserving diversity. 'roundrobin' (legacy): equal slots per cluster.")
+    parser.add_argument("--hybrid_temperature", type=float, default=1.0,
+                       help="Softmax temperature for the weighted allocator. Lower T = more "
+                            "concentrated on the best cluster; higher T = more uniform.")
+    parser.add_argument("--hybrid_min_per_cluster", type=int, default=1,
+                       help="Minimum number of picks per non-empty cluster (diversity floor).")
+    parser.add_argument("--plm_sampling_frac", type=float, default=0.0,
+                       help="Reserve this fraction of each batch for top-by-PLM picks. 0 = off.")
+    parser.add_argument("--plm_sampling_until_round", type=int, default=0,
+                       help="PLM-fraction is applied for rounds 1..N where N = this value. "
+                            "0 = disable. Use 2 to limit to init + first RL round.")
+    parser.add_argument("--plm_reward_until_round", type=int, default=0,
+                       help="Force PLM reward lambda to 0 after this round (1-indexed). "
+                            "0 = honor only the existing --plm_reward_decay schedule.")
+    parser.add_argument("--shap_prune_start_round", type=int, default=0,
+                       help="Start SHAP-based alphabet pruning from this round onward "
+                            "(1-indexed; round 1 = init). 0 = use --shap_prune_min_samples gate.")
+    parser.add_argument("--use_mutcompute", action="store_true", default=False,
+                       help="Replace ESM-2 WT-marginal scoring with MutCompute structure-based "
+                            "log-likelihood-ratio scoring for all zero-shot call sites "
+                            "(reward shaping, sampling fraction, active blending). Requires "
+                            "data/<dataset>/mutcompute.csv to be present.")
+    parser.add_argument("--mutcompute_offset", type=int, default=None,
+                       help="Manual override for the offset between 0-indexed varying positions "
+                            "in wt.fasta and the 'pos' column in mutcompute.csv. Default None = "
+                            "auto-detect by aligning the wtAA column against wt.fasta.")
+    parser.add_argument("--zeroshot_blend", type=float, default=0.0,
+                       help="Ensemble blend of MutCompute and ESM-2 in the zero-shot dispatcher "
+                            "(only active when --use_mutcompute is set). 0.0 = pure MC (Plan C "
+                            "default); 1.0 = pure ESM (=Plan B PLM-reward); 0 < α < 1 → "
+                            "(1-α)·z(MC) + α·z(ESM). Used by Plan D D1 ensemble experiments.")
+    parser.add_argument("--zeroshot_early_blend", type=float, default=None,
+                       help="Plan E: round-staggered override. For the first "
+                            "--zeroshot_early_rounds RL rounds (round_idx ∈ [1, N]), use this "
+                            "blend value instead of --zeroshot_blend. None = no override.")
+    parser.add_argument("--zeroshot_early_rounds", type=int, default=0,
+                       help="Plan E: number of early RL rounds to use --zeroshot_early_blend for "
+                            "(round-indexed from 1 = first RL round; round 0 is init). Default 0 "
+                            "disables the round-staggered override.")
+    parser.add_argument("--shap_prune_alphabet", action="store_true", default=False,
+                       help="Savinase-style hotspot reselection: at the start of each round 2+, "
+                            "fit XGBoost on (one-hot mutation features, fitness), compute SHAP, "
+                            "and drop per-position AAs whose mean SHAP <= threshold. AAs in the "
+                            "top-K best variants are always retained; minimum alphabet size per "
+                            "position is enforced. Sets --constrain_alphabet implicitly.")
+    parser.add_argument("--shap_prune_threshold", type=float, default=0.0,
+                       help="AAs with mean SHAP > this threshold are kept (default 0.0).")
+    parser.add_argument("--shap_prune_min_alphabet", type=int, default=3,
+                       help="Minimum alphabet size per varying position (default 3).")
+    parser.add_argument("--shap_prune_min_samples", type=int, default=50,
+                       help="Minimum collected samples required before pruning kicks in (default 50).")
+    parser.add_argument("--shap_prune_topk_keep", type=int, default=10,
+                       help="AAs appearing in the top-K best collected variants are always retained (default 10).")
     parser.add_argument("--n_rounds", type=int, default=5,
                        help="Number of iterative rounds (default: 5 -> 480 queries, benchmark-standard)")
     parser.add_argument("--n_steps_per_round", type=int, default=500,
@@ -2103,7 +3135,7 @@ Examples:
                        help="Top-k cutoff for CLADE-2 sampling (default: 1000)")
     parser.add_argument("--n_clusters", type=int, default=10,
                        help="Number of clusters for sampling (default: 10)")
-    parser.add_argument("--sampling", type=str, choices=['cluster', 'active'], default='cluster',
+    parser.add_argument("--sampling", type=str, choices=['cluster', 'active', 'hybrid'], default='cluster',
                        help="Sampling strategy (default: cluster)")
     parser.add_argument("--acquisition", type=str, choices=['ts', 'ucb', 'ei'], default='ts',
                        help="Acquisition function for active sampling (default: ts)")
@@ -2195,6 +3227,31 @@ Examples:
             features_kind=args.features,
             n_gpt_ensemble=args.n_gpt_ensemble,
             prior_model_path=args.prior_model_path,
+            plm_zeroshot_pool_frac=args.plm_zeroshot_pool_frac,
+            plm_zeroshot_explore_frac=args.plm_zeroshot_explore_frac,
+            plm_zeroshot_temperature=args.plm_zeroshot_temperature,
+            plm_active_alpha=args.plm_active_alpha,
+            shap_prune_alphabet=args.shap_prune_alphabet,
+            shap_prune_threshold=args.shap_prune_threshold,
+            shap_prune_min_alphabet=args.shap_prune_min_alphabet,
+            shap_prune_min_samples=args.shap_prune_min_samples,
+            shap_prune_topk_keep=args.shap_prune_topk_keep,
+            plm_reward_lambda=args.plm_reward_lambda,
+            plm_reward_decay=args.plm_reward_decay,
+            hybrid_alpha=args.hybrid_alpha,
+            hybrid_n_clusters=args.hybrid_n_clusters,
+            hybrid_alloc=args.hybrid_alloc,
+            hybrid_temperature=args.hybrid_temperature,
+            hybrid_min_per_cluster=args.hybrid_min_per_cluster,
+            plm_sampling_frac=args.plm_sampling_frac,
+            plm_sampling_until_round=args.plm_sampling_until_round,
+            plm_reward_until_round=args.plm_reward_until_round,
+            shap_prune_start_round=args.shap_prune_start_round,
+            use_mutcompute=args.use_mutcompute,
+            mutcompute_offset=args.mutcompute_offset,
+            zeroshot_blend=args.zeroshot_blend,
+            zeroshot_early_blend=args.zeroshot_early_blend,
+            zeroshot_early_rounds=args.zeroshot_early_rounds,
         )
         results.append(result)
 

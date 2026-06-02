@@ -34,10 +34,11 @@ create_links "$SCRIPT_BASE/Random" "$REPO_BASE/Random"
 create_links "$SCRIPT_BASE/GreedyWalk" "$REPO_BASE/GreedyWalk"
 
 # Phase 2.1 baselines (scaffolding; see scripts/<method>/README_INTEGRATION.md)
-mkdir -p "$REPO_BASE/EVOLVEpro" "$REPO_BASE/ftMLDE" "$REPO_BASE/MULTIevolve"
+mkdir -p "$REPO_BASE/EVOLVEpro" "$REPO_BASE/ftMLDE" "$REPO_BASE/MULTIevolve" "$REPO_BASE/Mu-Protein"
 create_links "$SCRIPT_BASE/EVOLVEpro" "$REPO_BASE/EVOLVEpro"
 create_links "$SCRIPT_BASE/ftMLDE" "$REPO_BASE/ftMLDE"
 create_links "$SCRIPT_BASE/MULTIevolve" "$REPO_BASE/MULTIevolve"
+create_links "$SCRIPT_BASE/Mu-Protein" "$REPO_BASE/Mu-Protein"
 create_links "$SCRIPT_BASE/CLADE" "$REPO_BASE/CLADE"
 
 # Handle AiCE nested scripts/ directory

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Per-dataset wrapper: EvoPlay on TRPB. Delegates to run_generic.py."""
+"""Per-dataset wrapper: EvoPlay on 4site_TRPB. Delegates to run_generic.py."""
 import os, sys
-sys.argv.insert(1, "TRPB")
+sys.argv.insert(1, "4site_TRPB")
 sys.argv.insert(1, "--dataset")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from run_generic import main
