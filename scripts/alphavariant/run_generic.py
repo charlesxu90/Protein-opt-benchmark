@@ -456,6 +456,10 @@ class IterativeProteinTrainer:
         # sequence and collapses generation on huge spaces). Set post-construction.
         self.use_oracle = False
         self.oracle_landscape = None
+        # Cap generated variants to at most this many mutations from the reference
+        # (refSeq = best-so-far "start variant"); None disables. Keeps multi-site
+        # generation near the data manifold. Set post-construction.
+        self.max_n_mut = None
         # Ensemble blend of MC + ESM in the zero-shot dispatcher. Only applies when
         # use_mutcompute=True. α=0.0 → pure MC (Plan C default); α=1.0 → pure ESM;
         # 0 < α < 1 → blend z(MC) and z(ESM) within the candidate pool.
@@ -548,12 +552,76 @@ class IterativeProteinTrainer:
         logger.info(f"Varying positions: {len(self.varying_positions)} / {seq_len}; "
                     f"per-position alphabet sizes: {[len(a) for a in self.per_position_alphabets]}")
 
+    def _ensure_combo_map(self):
+        """Build the AACombo(short)->full-sequence mapping for oracle scoring.
+
+        When AlphaVariant generates in the short AACombo space (e.g. CreiLOV: 15
+        varying positions) but the oracle was trained on the FULL sequence (119aa),
+        the combo must be expanded back onto the wild-type before scoring -- otherwise
+        the oracle sees a 15-mer padded to 119 with 'A' and the reward signal degrades
+        (verified: Spearman 0.86 vs 1.0). For datasets where the generation length
+        already equals the oracle length (AAV/PAB1/GFP: AACombo == seq), the map is a
+        no-op and sequences pass through unchanged.
+        """
+        if getattr(self, '_combo_map_ready', False):
+            return
+        self._combo_map_ready = True
+        self._combo_full_wt = None
+        self._combo_positions = None
+        if not (self.use_oracle and self.oracle_landscape is not None):
+            return
+        try:
+            oracle_len = int(self.oracle_landscape.seq_len)
+        except Exception:
+            return
+        if self.seq_len >= oracle_len:
+            return  # generation already in full-sequence space; nothing to expand
+        data_dir = os.path.dirname(self.landscape_path)
+        wt_path = os.path.join(data_dir, 'wt.fasta')
+        vp_path = os.path.join(data_dir, 'varying_positions.txt')
+        if not (os.path.exists(wt_path) and os.path.exists(vp_path)):
+            logger.warning("AACombo->full expansion unavailable (missing wt.fasta or "
+                           "varying_positions.txt); scoring short combos directly.")
+            return
+        full_wt = ''.join(l.strip() for l in open(wt_path)
+                          if l.strip() and not l.startswith('>'))
+        positions = [int(x) for x in open(vp_path).read().strip().split(',') if x.strip()]
+        if len(positions) != self.seq_len or len(full_wt) != oracle_len:
+            logger.warning(f"AACombo->full map size mismatch (combo={self.seq_len}, "
+                           f"positions={len(positions)}, full_wt={len(full_wt)}, "
+                           f"oracle={oracle_len}); scoring short combos directly.")
+            return
+        self._combo_full_wt = full_wt
+        self._combo_positions = positions
+        logger.info(f"AACombo->full expansion active: {self.seq_len} varying positions "
+                    f"mapped onto {oracle_len}aa wild-type for oracle scoring.")
+
+    def _combo_to_full(self, seqs: List[str]) -> List[str]:
+        """Expand short AACombo sequences onto the full wild-type (no-op if not needed)."""
+        self._ensure_combo_map()
+        if self._combo_positions is None:
+            return list(seqs)
+        out = []
+        for combo in seqs:
+            chars = list(self._combo_full_wt)
+            for i, p in enumerate(self._combo_positions):
+                if i < len(combo):
+                    chars[p] = combo[i]
+            out.append(''.join(chars))
+        return out
+
     def _get_ground_truth_fitness(self, seqs: List[str]) -> np.ndarray:
         """Get ground truth fitness for sequences."""
         if self.use_oracle and self.oracle_landscape is not None:
-            # Learned-oracle (multi-site): score ANY sequence, normalized to [0,1].
+            # Learned-oracle (multi-site): score ANY sequence in RAW fitness units
+            # (native scale). The REINFORCE reward + surrogate + sigma are calibrated
+            # for raw fitness (as in lookup mode); feeding normalized [0,1] here shrinks
+            # the fitness signal (catastrophically for large-range datasets like CreiLOV).
+            # Expand short AACombo generations onto the full WT first (CreiLOV); no-op
+            # when generation length already matches the oracle (AAV/PAB1/GFP).
             return np.asarray(
-                self.oracle_landscape.get_fitness_normalized(list(seqs)), dtype=float)
+                self.oracle_landscape.get_fitness(self._combo_to_full(list(seqs))),
+                dtype=float)
         fitness = np.zeros(len(seqs))
         for i, seq in enumerate(seqs):
             if seq in self.seq_to_fitness:
@@ -944,10 +1012,22 @@ class IterativeProteinTrainer:
         AAs = self._SHAP_AAS
         n_aa = len(AAs)
         aa2k = {aa: k for k, aa in enumerate(AAs)}
+        # Residues at the varying positions, regardless of whether collected
+        # sequences are short combos (len == #varying positions, so s[j] is already
+        # the varying residue: AAV/PAB1/CreiLOV) or full-length (e.g. GFP 237aa with
+        # 233 NON-contiguous varying positions, where we must index by the protein
+        # coordinate positions[j], not s[j]).
+        def _combo_view(s):
+            if len(s) == len(positions):
+                return s
+            if positions and positions[-1] < len(s):
+                return ''.join(s[p] for p in positions)
+            return s[:len(positions)]
+        combo_seqs = [_combo_view(s) for s in seqs]
         X = np.zeros((len(seqs), len(positions) * n_aa), dtype=np.float32)
-        for i, s in enumerate(seqs):
-            for j in range(min(len(positions), len(s))):
-                k = aa2k.get(s[j])
+        for i, cv in enumerate(combo_seqs):
+            for j in range(min(len(positions), len(cv))):
+                k = aa2k.get(cv[j])
                 if k is not None:
                     X[i, j * n_aa + k] = 1.0
 
@@ -972,9 +1052,9 @@ class IterativeProteinTrainer:
         top_indices = np.argsort(-Y)[:top_k]
         must_keep = [set() for _ in positions]
         for ti in top_indices:
-            s = seqs[ti]
-            for j in range(min(len(positions), len(s))):
-                must_keep[j].add(s[j])
+            cv = combo_seqs[ti]
+            for j in range(min(len(positions), len(cv))):
+                must_keep[j].add(cv[j])
 
         sizes_before = [len(self.per_position_alphabets[p]) for p in positions]
         new_alphabets = [set(a) for a in self.per_position_alphabets]
@@ -1014,6 +1094,24 @@ class IterativeProteinTrainer:
 
         self.per_position_alphabets = new_alphabets
         self.constrain_alphabet = True
+
+        # Propagate the pruned alphabet into the GPT hotspot config so generation in
+        # the following rounds samples on the pruned subspace. Without this, the GPT
+        # keeps proposing on the original observed alphabet while the per-position
+        # filter enforces the pruned one, so proposals get rejected -- catastrophically
+        # for long sequences (GFP: ~100% dropped, rounds 2-5 stall). pos_aa_candidates
+        # is keyed by 1-indexed protein position (positions[] is 0-indexed).
+        tmpl = getattr(self, 'template', None)
+        cand = getattr(tmpl, 'pos_aa_candidates', None) if tmpl is not None else None
+        if cand is not None:
+            synced = 0
+            for j, p in enumerate(positions):
+                key = p + 1
+                if key in cand:
+                    cand[key] = sorted(new_alphabets[p])
+                    synced += 1
+            logger.info(f"SHAP prune: synced {synced} pruned positions into the GPT "
+                        f"hotspot config (generation now samples the pruned subspace)")
 
         sizes_after = [len(self.per_position_alphabets[p]) for p in positions]
         logger.info(
@@ -1484,8 +1582,31 @@ class IterativeProteinTrainer:
         """Return numpy features for surrogate per self.features_kind."""
         if self.features_kind == 'esm2':
             return self._embed_seqs_esm(seqs)
+        if self.features_kind == 'ev_onehot':
+            return self._ev_onehot_feat(seqs)
         from popscorer.fitness.aa_onehot_pred.embed import seqs2feat
         return seqs2feat(seqs)
+
+    def _ev_onehot_feat(self, seqs):
+        """one-hot features augmented with the EVmutation (plmc Potts) statistical-
+        energy score as an extra column. The EV score is a homolog-derived zero-shot
+        fitness proxy that generalizes far better than one-hot on large free-mutation
+        spaces. Requires data/<dataset>/plmc/uniref100.model_params + wt.fasta.
+        The EV column is standardized (z-score, scaler fit once on the first/training
+        call) so the Ridge ensemble members handle its native (~-96..3) scale."""
+        seqs = list(seqs)
+        if getattr(self, '_ev_predictor', None) is None:
+            from popscorer.fitness.ev_onehot_pred.predictor import EVPredictor
+            self._ev_predictor = EVPredictor(os.path.dirname(self.landscape_path))
+            self._ev_mu, self._ev_sigma = None, None
+        from popscorer.fitness.aa_onehot_pred.embed import seqs2feat
+        oh = seqs2feat(seqs)
+        ev = np.asarray(self._ev_predictor.seq2score(seqs), dtype=np.float32).reshape(-1, 1)
+        if self._ev_mu is None:          # fit scaler once (on the first = training call)
+            self._ev_mu = float(ev.mean())
+            self._ev_sigma = float(ev.std() + 1e-8)
+        ev = (ev - self._ev_mu) / self._ev_sigma
+        return np.concatenate([oh, ev], axis=1)
 
     def _train_surrogate(self):
         """Train surrogate model on all collected data."""
@@ -1682,12 +1803,28 @@ class IterativeProteinTrainer:
 
         tmpl = getattr(self, "template", None)
         if tmpl is not None and getattr(tmpl, "positions", None):
+            # Reference = the "start variant": anchor generation on the best-so-far
+            # sequence (refSeq tracks the start; updated each round to self.best_seq).
+            # Non-hotspot positions are set to it, and the max_n_mut cap is measured
+            # relative to it. Falls back to the template WT in round 0.
             ref = tmpl.refSeq
+            # If generation is in the short AACombo space but refSeq is the full WT
+            # (e.g. CreiLOV: 15-mer combos vs 119aa refSeq), build a combo-space
+            # reference so snapping + the max_n_mut cap operate in the generated space
+            # instead of being skipped by the length-mismatch guard below.
+            if len(ref) != self.seq_len:
+                self._ensure_combo_map()
+                cp = getattr(self, "_combo_positions", None)
+                if cp is not None and len(cp) == self.seq_len:
+                    ref = ''.join(self._combo_full_wt[p] for p in cp)
+            if getattr(self, "best_seq", None) and len(self.best_seq) == len(ref):
+                ref = self.best_seq
             # positions in hotspots.csv are 1-indexed; pos_aa_candidates is a
             # dict keyed by 1-based position with lists of observed AAs.
             allowed = {(p - 1): list(tmpl.pos_aa_candidates.get(p, []))
                        for p in tmpl.positions}
             hotspot0 = sorted(allowed.keys())
+            max_mut = getattr(self, "max_n_mut", None)
             rng = np.random
             snapped: List[str] = []
             for s in aa_seqs:
@@ -1701,6 +1838,16 @@ class IterativeProteinTrainer:
                     if cands:
                         chars[pos0] = gpt_aa if gpt_aa in cands \
                                       else cands[rng.randint(len(cands))]
+                # Cap mutations vs the reference (start variant) within hotspots:
+                # randomly revert excess mutated positions back to the reference so
+                # the generated variant is <= max_n_mut mutations from the start.
+                if max_mut is not None:
+                    mut_pos = [p for p in hotspot0 if chars[p] != ref[p]]
+                    if len(mut_pos) > max_mut:
+                        drop = rng.choice(mut_pos, size=len(mut_pos) - max_mut,
+                                          replace=False)
+                        for p in drop:
+                            chars[p] = ref[p]
                 snapped.append(''.join(chars))
             aa_seqs = snapped
 
@@ -2095,10 +2242,15 @@ class IterativeProteinTrainer:
             x_full = torch.cat([start, token_tensor[:, :-1]], dim=1)
             logits, _ = self.agent_model(x_full)
             log_probs = F.log_softmax(logits, dim=-1)
-            # nll_loss(p, target) returns -p[target], so sum across positions
-            # to get the same sample_log_probs the loop produced (which was
-            # actually a per-sample sum of NLLs, despite the variable name).
-            sample_log_probs = -log_probs.gather(
+            # The original popgen nll_loss (agent_trainer.py) returns inputs[target]
+            # = the selected token's LOG-PROB (NEGATIVE), summed over positions, so
+            # agent_likelihoods is a NEGATIVE sum of log-probs (e.g. ~-12). A previous
+            # refactor added a leading `-` here (mis-reading nll_loss as returning
+            # -p[target]), flipping the sign to POSITIVE. That inverted the
+            # `loss -= 5e3*(1/agent_likelihoods)` regularizer: instead of pushing
+            # likelihoods AWAY from 0 (stable) it pushed them TOWARD 0 -> 1/x -> +inf,
+            # which broke training (loss=inf) on every dataset incl. 4site_GB1.
+            sample_log_probs = log_probs.gather(
                 2, token_tensor.unsqueeze(-1)
             ).squeeze(-1).sum(dim=1)
             agent_likelihoods = sample_log_probs
@@ -2609,6 +2761,7 @@ def run_single_experiment(
     zeroshot_early_rounds: int = 0,
     use_oracle: bool = False,
     oracle_dir: Optional[str] = None,
+    max_n_mut: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run a single AlphaVariant iterative optimization experiment on any dataset."""
 
@@ -2787,6 +2940,7 @@ def run_single_experiment(
 
     # Multi-site learned-oracle mode: swap the data.csv lookup for the CNN oracle and
     # set the normalization reference to the oracle's [0,1] scale.
+    trainer.max_n_mut = max_n_mut
     trainer.use_oracle = use_oracle
     if use_oracle:
         # data_dir is <benchmark>/data (symlink-safe root resolution).
@@ -2795,9 +2949,13 @@ def run_single_experiment(
         from utils.oracle_landscape import OracleLandscape
         _odir = oracle_dir or os.path.join(_bench_root, 'oracles')
         trainer.oracle_landscape = OracleLandscape(dataset, oracle_dir=_odir, device=device)
-        trainer.max_fitness_raw = 1.0
-        trainer.min_fitness_raw = 0.0
-        logger.info(f"Oracle mode: {trainer.oracle_landscape}")
+        # Normalization reference = the oracle's (measured-data) fitness range, so the
+        # surrogate/reward behave exactly as in lookup mode (which used measured max/min).
+        trainer.max_fitness_raw = trainer.oracle_landscape.fit_max
+        trainer.min_fitness_raw = trainer.oracle_landscape.fit_min
+        logger.info(f"Oracle mode: {trainer.oracle_landscape} "
+                    f"(reward in raw units, range [{trainer.min_fitness_raw:.3g},"
+                    f"{trainer.max_fitness_raw:.3g}])")
 
     # Run iterative training
     start_time = datetime.now()
@@ -2814,9 +2972,9 @@ def run_single_experiment(
         _bench_root = os.path.dirname(os.path.abspath(data_dir))
         sys.path.insert(0, os.path.join(_bench_root, 'scripts'))
         from run_oracle_benchmark import compute_metrics as _oracle_metrics
-        fn = np.asarray(all_oracle, dtype=float)            # already [0,1] (oracle norm)
+        fraw = np.asarray(all_oracle, dtype=float)          # raw oracle units (reward scale)
         ls = trainer.oracle_landscape
-        fraw = fn * ls.scale + ls.fit_min
+        fn = (fraw - ls.fit_min) / (ls.scale + 1e-12)       # normalized [0,1] for metrics
         metrics = _oracle_metrics(list(all_seqs), fn, fraw, wildtype,
                                   trainer.varying_positions, batch_size, n_rounds)
         res = {'method': 'AlphaVariant', 'dataset': dataset, 'seed': seed,
@@ -3077,8 +3235,9 @@ Examples:
     # Training parameters
     parser.add_argument("--surrogate", type=str, choices=['ensemble', 'cnn'], default='ensemble',
                         help="Surrogate model: 'ensemble' (Ridge+RF+GBT, default) or 'cnn' (FLEXS-style CNN ensemble)")
-    parser.add_argument("--features", type=str, choices=['onehot', 'esm2'], default='onehot',
-                        help="Surrogate features: 'onehot' (popscorer aa_onehot, default) or 'esm2' "
+    parser.add_argument("--features", type=str, choices=['onehot', 'esm2', 'ev_onehot'], default='onehot',
+                        help="Surrogate features: 'onehot' (popscorer aa_onehot, default), 'ev_onehot' "
+                        "(one-hot + EVmutation/plmc statistical-energy column), or 'esm2' "
                         "(facebook/esm2_t12_35M_UR50D mean-pooled over varying positions of WT-substituted sequence)")
     parser.add_argument("--constrain_alphabet", action="store_true", default=False,
                         help="Drop GPT proposals whose AAs violate the observed per-position alphabet "
@@ -3171,6 +3330,10 @@ Examples:
                             "as ground-truth fitness and write a results_oracle-compatible JSON.")
     parser.add_argument("--oracle_dir", type=str, default=None,
                        help="Override oracle checkpoint dir (default <benchmark>/oracles).")
+    parser.add_argument("--max_n_mut", type=int, default=None,
+                       help="Cap generated variants to <= this many mutations from the "
+                            "reference (refSeq = best-so-far start variant). None disables. "
+                            "Use ~5 for multi-site to keep generation near the data manifold.")
     parser.add_argument("--shap_prune_alphabet", action="store_true", default=False,
                        help="Savinase-style hotspot reselection: at the start of each round 2+, "
                             "fit XGBoost on (one-hot mutation features, fitness), compute SHAP, "
@@ -3318,6 +3481,7 @@ Examples:
             zeroshot_early_rounds=args.zeroshot_early_rounds,
             use_oracle=args.oracle,
             oracle_dir=args.oracle_dir,
+            max_n_mut=args.max_n_mut,
         )
         results.append(result)
 
