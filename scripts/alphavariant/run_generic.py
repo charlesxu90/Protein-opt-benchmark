@@ -1601,7 +1601,11 @@ class IterativeProteinTrainer:
             self._ev_mu, self._ev_sigma = None, None
         from popscorer.fitness.aa_onehot_pred.embed import seqs2feat
         oh = seqs2feat(seqs)
-        ev = np.asarray(self._ev_predictor.seq2score(seqs), dtype=np.float32).reshape(-1, 1)
+        # The EV (plmc Potts) model scores full-length sequences; expand short AACombo
+        # generations onto the full WT first (CreiLOV: 15-mer -> 119aa). No-op when seqs
+        # are already full length (AAV/PAB1/GFP: AACombo == seq).
+        ev = np.asarray(self._ev_predictor.seq2score(self._combo_to_full(seqs)),
+                        dtype=np.float32).reshape(-1, 1)
         if self._ev_mu is None:          # fit scaler once (on the first = training call)
             self._ev_mu = float(ev.mean())
             self._ev_sigma = float(ev.std() + 1e-8)
