@@ -11,6 +11,13 @@
 ###SBATCH --account=YOUR_ACCOUNT
 ###SBATCH --constraint=a100            # or v100/gpu type
 #
+# ============================ EXPERIMENTAL / SECONDARY ============================
+# This is the JOB-ARRAY variant (one task = one (dataset,seed), --gres=gpu:1 per task).
+# It is NOT the primary path. The format-matched, single-node scripts are the ones to
+# use: slurm_ms_GFP.sh and slurm_ms_CreiLOV.sh. Keep this only to trial array semantics
+# as a separate experiment; it writes the same idempotent results_oracle/.../seedN.json.
+# =================================================================================
+#
 # AlphaVariant (Plan C) on the four multi-site ORACLE benchmarks, as a SLURM job
 # array: ONE array task = one (dataset, seed). Maximally parallel — wall time of the
 # whole sweep ≈ the longest single task (GFP ~2h) given enough concurrent GPUs.
@@ -24,8 +31,8 @@
 #   - alphavariant/priors/<dataset>/prior_model.pt   (scripts/alphavariant/train_ms_prior.py)
 #   - data/<dataset>/mutcompute.csv            (provided)
 #
-# Submit:   sbatch scripts/alphavariant/run_multisite_benchmark.sh
-# Local test (no SLURM): SLURM_ARRAY_TASK_ID=0 bash scripts/alphavariant/run_multisite_benchmark.sh
+# Submit:   sbatch scripts/alphavariant/slurm_array_experimental.sh
+# Local test (no SLURM): SLURM_ARRAY_TASK_ID=0 bash scripts/alphavariant/slurm_array_experimental.sh
 # Subset:   sbatch --array=0-29 ... (only ms_AAV);  --array=90-119 ... (only ms_GFP)
 set -euo pipefail
 
