@@ -55,6 +55,7 @@ colors = {
     "GreedyWalk":   CAT_PALETTE[0],   # blue
     "ALDE":         CAT_PALETTE[1],   # orange
     "FLEXS":        CAT_PALETTE[2],   # green (display label: AdaLead)
+    "AdaLead":      CAT_PALETTE[2],   # green (multi-site AdaLead method)
     "AiCE":         CAT_PALETTE[4],   # purple
     "ftMLDE":       CAT_PALETTE[5],   # brown
     "CLADE":        CAT_PALETTE[6],   # pink
@@ -100,8 +101,9 @@ TASKS = {
             "ms_AAV": "AAV multi-site", "ms_CreiLOV": "CreiLOV multi-site",
             "ms_GFP": "GFP multi-site", "ms_PAB1": "PAB1 multi-site",
         },
-        "main_methods": {"Random", "GreedyWalk", "ALDE", "CLADE", "ftMLDE"},
-        "highlight": set(),
+        "main_methods": {"Random", "GreedyWalk", "ALDE", "CLADE", "ftMLDE",
+                         "AdaLead", "MULTIevolve", "EVOLVEpro", "AiCE", "AlphaVariant"},
+        "highlight": {"AlphaVariant"},
         "max_prefix": "main_figure_multisite_max_fitness_median_iqr",
         "top_prefix": "supplementary_figure_multisite_top128_mean_fitness_median_iqr",
         "max_ylim": (0.0, 1.1), "max_yticks": np.arange(0.0, 1.01, 0.2),

@@ -451,6 +451,11 @@ class IterativeProteinTrainer:
         # through _score_mutcompute(...) instead of _score_zeroshot_esm(...).
         self.use_mutcompute = False
         self.mutcompute_offset = None      # None = auto-detect; int = manual override
+        # Multi-site: learned CNN oracle (utils.oracle_landscape) as ground-truth
+        # fitness instead of the data.csv lookup (which returns 0 for any unmeasured
+        # sequence and collapses generation on huge spaces). Set post-construction.
+        self.use_oracle = False
+        self.oracle_landscape = None
         # Ensemble blend of MC + ESM in the zero-shot dispatcher. Only applies when
         # use_mutcompute=True. α=0.0 → pure MC (Plan C default); α=1.0 → pure ESM;
         # 0 < α < 1 → blend z(MC) and z(ESM) within the candidate pool.
@@ -545,6 +550,10 @@ class IterativeProteinTrainer:
 
     def _get_ground_truth_fitness(self, seqs: List[str]) -> np.ndarray:
         """Get ground truth fitness for sequences."""
+        if self.use_oracle and self.oracle_landscape is not None:
+            # Learned-oracle (multi-site): score ANY sequence, normalized to [0,1].
+            return np.asarray(
+                self.oracle_landscape.get_fitness_normalized(list(seqs)), dtype=float)
         fitness = np.zeros(len(seqs))
         for i, seq in enumerate(seqs):
             if seq in self.seq_to_fitness:
@@ -2138,8 +2147,18 @@ class IterativeProteinTrainer:
             # Update
             self.optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.agent_model.parameters(), 1.0)
-            self.optimizer.step()
+            total_norm = torch.nn.utils.clip_grad_norm_(self.agent_model.parameters(), 1.0)
+            # Non-finite guard: the exploration regularizer 5e3*(1/agent_likelihoods)
+            # can hit +/-inf on short sequences (e.g. 28-aa AAV) when a likelihood
+            # approaches 0, producing NaN grads that corrupt the GPT (later sampling
+            # then fails the Categorical simplex check). Skip such degenerate steps;
+            # all finite steps update exactly as before.
+            if torch.isfinite(loss) and torch.isfinite(total_norm):
+                self.optimizer.step()
+            else:
+                if step % 50 == 0:
+                    logger.warning(f"  skipped non-finite REINFORCE step {step+1} "
+                                   f"(loss={loss.item():.3g}, grad_norm={float(total_norm):.3g})")
 
             # TensorBoard logging
             self.global_step += 1
@@ -2588,6 +2607,8 @@ def run_single_experiment(
     zeroshot_blend: float = 0.0,
     zeroshot_early_blend: Optional[float] = None,
     zeroshot_early_rounds: int = 0,
+    use_oracle: bool = False,
+    oracle_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a single AlphaVariant iterative optimization experiment on any dataset."""
 
@@ -2764,6 +2785,20 @@ def run_single_experiment(
     trainer.zeroshot_early_blend = zeroshot_early_blend
     trainer.zeroshot_early_rounds = zeroshot_early_rounds
 
+    # Multi-site learned-oracle mode: swap the data.csv lookup for the CNN oracle and
+    # set the normalization reference to the oracle's [0,1] scale.
+    trainer.use_oracle = use_oracle
+    if use_oracle:
+        # data_dir is <benchmark>/data (symlink-safe root resolution).
+        _bench_root = os.path.dirname(os.path.abspath(data_dir))
+        sys.path.insert(0, _bench_root)
+        from utils.oracle_landscape import OracleLandscape
+        _odir = oracle_dir or os.path.join(_bench_root, 'oracles')
+        trainer.oracle_landscape = OracleLandscape(dataset, oracle_dir=_odir, device=device)
+        trainer.max_fitness_raw = 1.0
+        trainer.min_fitness_raw = 0.0
+        logger.info(f"Oracle mode: {trainer.oracle_landscape}")
+
     # Run iterative training
     start_time = datetime.now()
     all_seqs, all_predicted, all_oracle = trainer.train()
@@ -2771,6 +2806,30 @@ def run_single_experiment(
 
     logger.info(f"Training completed in {runtime:.1f} seconds")
     logger.info(f"Generated {len(all_seqs)} sequences ({len(set(all_seqs))} unique)")
+
+    # Multi-site oracle mode: write a results_oracle-compatible JSON using the SAME
+    # metric definitions as scripts/run_oracle_benchmark.py (max_fitness_norm,
+    # top128_mean_norm, ...) so AlphaVariant drops into the 9-method comparison.
+    if use_oracle:
+        _bench_root = os.path.dirname(os.path.abspath(data_dir))
+        sys.path.insert(0, os.path.join(_bench_root, 'scripts'))
+        from run_oracle_benchmark import compute_metrics as _oracle_metrics
+        fn = np.asarray(all_oracle, dtype=float)            # already [0,1] (oracle norm)
+        ls = trainer.oracle_landscape
+        fraw = fn * ls.scale + ls.fit_min
+        metrics = _oracle_metrics(list(all_seqs), fn, fraw, wildtype,
+                                  trainer.varying_positions, batch_size, n_rounds)
+        res = {'method': 'AlphaVariant', 'dataset': dataset, 'seed': seed,
+               'n_queries': len(all_seqs), 'oracle_test_spearman': ls.test_spearman,
+               'runtime_seconds': runtime, 'metrics': metrics}
+        sub = os.path.join(output_path, dataset, 'AlphaVariant')
+        os.makedirs(sub, exist_ok=True)
+        with open(os.path.join(sub, f'seed{seed}.json'), 'w') as f:
+            json.dump(res, f, indent=2)
+        print(f"  [oracle] {dataset}/AlphaVariant/seed{seed}: "
+              f"max={metrics['max_fitness_norm']:.4f} "
+              f"top128={metrics['top128_mean_norm']:.4f}")
+        return res
 
     # Prepare result
     result = {
@@ -3107,6 +3166,11 @@ Examples:
                        help="Plan E: number of early RL rounds to use --zeroshot_early_blend for "
                             "(round-indexed from 1 = first RL round; round 0 is init). Default 0 "
                             "disables the round-staggered override.")
+    parser.add_argument("--oracle", action="store_true", default=False,
+                       help="Multi-site: use the learned CNN oracle (oracles/<dataset>/oracle.pt) "
+                            "as ground-truth fitness and write a results_oracle-compatible JSON.")
+    parser.add_argument("--oracle_dir", type=str, default=None,
+                       help="Override oracle checkpoint dir (default <benchmark>/oracles).")
     parser.add_argument("--shap_prune_alphabet", action="store_true", default=False,
                        help="Savinase-style hotspot reselection: at the start of each round 2+, "
                             "fit XGBoost on (one-hot mutation features, fitness), compute SHAP, "
@@ -3252,6 +3316,8 @@ Examples:
             zeroshot_blend=args.zeroshot_blend,
             zeroshot_early_blend=args.zeroshot_early_blend,
             zeroshot_early_rounds=args.zeroshot_early_rounds,
+            use_oracle=args.oracle,
+            oracle_dir=args.oracle_dir,
         )
         results.append(result)
 

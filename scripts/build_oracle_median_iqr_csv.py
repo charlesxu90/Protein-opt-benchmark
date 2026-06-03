@@ -26,7 +26,8 @@ import os
 import numpy as np
 
 DATASETS = ["ms_AAV", "ms_CreiLOV", "ms_GFP", "ms_PAB1"]
-METHODS = ["Random", "GreedyWalk", "ALDE", "CLADE", "ftMLDE"]
+METHODS = ["Random", "GreedyWalk", "ALDE", "CLADE", "ftMLDE",
+           "AdaLead", "MULTIevolve", "EVOLVEpro", "AiCE", "AlphaVariant"]
 
 
 def main():
