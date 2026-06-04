@@ -170,3 +170,7 @@ dataset/
 # FLEXS
 paper_code/
 .github/
+
+results_4site/
+results_oracle/
+sweep_logs/
