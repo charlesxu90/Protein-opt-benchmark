@@ -37,11 +37,13 @@ def main():
     ap.add_argument("--out", default=os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "figures", "ms_oracles",
         "multisite_oracle_median_iqr.csv")))
+    ap.add_argument("--datasets", nargs="+", default=DATASETS,
+                    help="subset of datasets to aggregate (default: all four)")
     args = ap.parse_args()
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
 
     rows = []
-    for d in DATASETS:
+    for d in args.datasets:
         for m in METHODS:
             maxv, top = [], []
             for fp in glob.glob(os.path.join(args.results_dir, d, m, "seed*.json")):

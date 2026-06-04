@@ -21,6 +21,7 @@ Usage: python scripts/compute_oracle_wilcoxon.py
 
 from __future__ import annotations
 
+import argparse
 import glob
 import json
 import os
@@ -72,6 +73,11 @@ def wtest(x, y, alternative):
 
 
 def main():
+    global DATASETS
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--datasets", nargs="+", default=DATASETS,
+                    help="subset of datasets to test (default: all four)")
+    DATASETS = ap.parse_args().datasets
     os.makedirs(OUT, exist_ok=True)
     n_pairs = len(METHODS) * (len(METHODS) - 1) // 2
     alpha_pair = ALPHA / n_pairs            # Bonferroni, full pairwise
@@ -84,7 +90,8 @@ def main():
     for key, label in METRICS:
         pair_rows = []
         present = [m for m in METHODS]  # all present (30 seeds each)
-        fig, axes = plt.subplots(1, 4, figsize=(15, 4.2))
+        fig, axes = plt.subplots(1, len(DATASETS), figsize=(3.75 * len(DATASETS), 4.2))
+        axes = np.atleast_1d(axes)
         for c, ds in enumerate(DATASETS):
             data = load(ds, key)
             order = sorted(data, key=lambda m: np.median(list(data[m].values())), reverse=True)

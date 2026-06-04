@@ -144,7 +144,10 @@ def plot_metric_figure(df, cfg, outdir, metric_med, metric_q1, metric_q3,
     main_methods = cfg["main_methods"]
     highlight = cfg["highlight"]
 
-    fig, axes = plt.subplots(1, 4, figsize=(7.25, 2.72), sharey=True)
+    n_panels = len(dataset_order)
+    fig, axes = plt.subplots(1, n_panels, figsize=(7.25 * n_panels / 4, 2.72),
+                             sharey=True)
+    axes = np.atleast_1d(axes)
     fig.patch.set_facecolor("white")
 
     for col, (ax, dataset) in enumerate(zip(axes, dataset_order)):
@@ -217,8 +220,13 @@ def main():
     parser.add_argument("--task", choices=list(TASKS.keys()), default="4site")
     parser.add_argument("--csv", default=None, help="defaults to the task's CSV")
     parser.add_argument("--outdir", default=None, help="defaults to the task's outdir")
+    parser.add_argument("--datasets", nargs="+", default=None,
+                        help="subset/reorder of datasets to plot (default: task's full order)")
     args = parser.parse_args()
     cfg = TASKS[args.task]
+    if args.datasets:
+        cfg = {**cfg, "dataset_order": [d for d in cfg["dataset_order"]
+                                        if d in args.datasets]}
 
     source_csv = args.csv or cfg["default_csv"]
     outdir = args.outdir or cfg["default_outdir"]
