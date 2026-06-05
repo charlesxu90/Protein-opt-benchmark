@@ -34,6 +34,20 @@ Bonferroni: pairwise α=0.05/45=1.11e-03; vs-best α=0.05/9=5.56e-03
 | ALDE | +0.075 | 9.3e-10 | **yes** |
 | Random | +0.116 | 9.3e-10 | **yes** |
 
+**ms_GFP** — best = **AiCE** (median 0.950); significantly beats 8/9 other methods:
+
+| vs | Δmedian | p(>) | sig |
+|---|---|---|---|
+| AlphaVariant | +0.016 | 6.0e-02 | ns |
+| GreedyWalk | +0.096 | 9.3e-10 | **yes** |
+| Random | +0.111 | 9.3e-10 | **yes** |
+| EVOLVEpro | +0.131 | 9.3e-10 | **yes** |
+| ALDE | +0.138 | 9.3e-10 | **yes** |
+| CLADE | +0.138 | 9.3e-10 | **yes** |
+| ftMLDE | +0.138 | 9.3e-10 | **yes** |
+| AdaLead | +0.138 | 9.3e-10 | **yes** |
+| MULTIevolve | +0.138 | 9.3e-10 | **yes** |
+
 **ms_PAB1** — best = **AlphaVariant** (median 0.576); significantly beats 8/9 other methods:
 
 | vs | Δmedian | p(>) | sig |
@@ -78,6 +92,20 @@ Bonferroni: pairwise α=0.05/45=1.11e-03; vs-best α=0.05/9=5.56e-03
 | EVOLVEpro | +0.061 | 9.3e-10 | **yes** |
 | AiCE | +0.066 | 9.3e-10 | **yes** |
 | Random | +0.162 | 9.3e-10 | **yes** |
+
+**ms_GFP** — best = **AiCE** (median 0.847); significantly beats 9/9 other methods:
+
+| vs | Δmedian | p(>) | sig |
+|---|---|---|---|
+| AlphaVariant | +0.050 | 1.0e-05 | **yes** |
+| GreedyWalk | +0.074 | 9.3e-10 | **yes** |
+| ftMLDE | +0.178 | 9.3e-10 | **yes** |
+| Random | +0.209 | 9.3e-10 | **yes** |
+| MULTIevolve | +0.213 | 9.3e-10 | **yes** |
+| EVOLVEpro | +0.216 | 9.3e-10 | **yes** |
+| ALDE | +0.229 | 9.3e-10 | **yes** |
+| AdaLead | +0.234 | 9.3e-10 | **yes** |
+| CLADE | +0.236 | 9.3e-10 | **yes** |
 
 **ms_PAB1** — best = **AlphaVariant** (median 0.504); significantly beats 7/9 other methods:
 
