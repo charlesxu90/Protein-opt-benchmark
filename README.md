@@ -43,6 +43,52 @@ All methods use:
 - **Total queries**: 480 sequences
 - **Encoding**: One-hot (most methods)
 
+### AlphaVariant Configurations (Plan C — shipped)
+
+AlphaVariant ships the **Plan C** configuration: base GPT-REINFORCE + surrogate
+ensemble with **MutCompute** (structure-based zero-shot) reward shaping and
+**SHAP**-based per-position alphabet pruning. The flags differ slightly between
+the two benchmark families. Run from the `alphavariant/` method directory.
+
+> **Environment**: AlphaVariant requires the env's `libstdc++` on the path, otherwise
+> matplotlib/torch fail with a `CXXABI` error:
+> ```bash
+> export LD_LIBRARY_PATH=/home/xux/miniforge3/envs/alphavariant-env/lib:$LD_LIBRARY_PATH
+> ```
+
+**Four-site combinatorial benchmark** (`4site_GB1`, `4site_PhoQ`, `4site_TEV`, `4site_TRPB`)
+— lookup-table landscape:
+
+```bash
+python run_generic.py --dataset 4site_PhoQ --seed 42 \
+    --use_mutcompute --plm_reward_lambda 0.5 --shap_prune_alphabet
+```
+
+**Multi-site learned-oracle benchmark** (`ms_AAV`, `ms_CreiLOV`, `ms_GFP`, `ms_PAB1`)
+— GGS/LatProtRL-style CNN oracle landscape, generative proposal over varying positions:
+
+```bash
+python run_generic.py --dataset ms_GFP --seed 42 \
+    --oracle --level uniform \
+    --prior_model_path priors/ms_GFP/prior_model.pt \
+    --use_mutcompute --shap_prune_alphabet \
+    --n_rounds 5 --n_steps_per_round 500 --device cuda:0 \
+    --data_dir ../data
+```
+
+| Flag | Four-site | Multi-site | Role |
+|------|:---------:|:----------:|------|
+| `--use_mutcompute` | ✓ | ✓ | Use MutCompute (not ESM-2) as the zero-shot scorer |
+| `--plm_reward_lambda 0.5` | ✓ | — | Blend MutCompute z-score into the reward (λ decays over rounds) |
+| `--shap_prune_alphabet` | ✓ | ✓ | SHAP per-position alphabet pruning (gated to oracle mode for constrain) |
+| `--oracle --prior_model_path …` | — | ✓ | Score via the trained CNN oracle; GPT prior from aligned homologs |
+| `--level uniform` | — | ✓ | Uniform hotspot weighting |
+
+Shared defaults (both families): `--batch_size 96 --n_rounds 5 --n_steps_per_round 500 --sigma 60`.
+Multi-site priors are trained per dataset via `scripts/alphavariant/train_ms_prior.py` and
+saved to `alphavariant/priors/<dataset>/prior_model.{pt,json}`. Sweep launchers:
+`scripts/alphavariant/_sweep_av_oracle.sh` (multi-site).
+
 ## Metrics
 
 All metrics are computed consistently across methods using the unified `utils/` module.

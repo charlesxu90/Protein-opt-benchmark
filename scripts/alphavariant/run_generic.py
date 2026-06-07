@@ -1093,7 +1093,11 @@ class IterativeProteinTrainer:
             new_alphabets[p] = kept
 
         self.per_position_alphabets = new_alphabets
-        self.constrain_alphabet = True
+        # Gate constrain_alphabet to oracle/multi-site only. On 4-site combinatorial
+        # tasks all positions vary; the filter rejects valid proposals without aiding
+        # exploration and regresses max fitness (PhoQ: 70 → 35).
+        if getattr(self, 'use_oracle', False):
+            self.constrain_alphabet = True
 
         # Propagate the pruned alphabet into the GPT hotspot config so generation in
         # the following rounds samples on the pruned subspace. Without this, the GPT
@@ -1101,9 +1105,10 @@ class IterativeProteinTrainer:
         # filter enforces the pruned one, so proposals get rejected -- catastrophically
         # for long sequences (GFP: ~100% dropped, rounds 2-5 stall). pos_aa_candidates
         # is keyed by 1-indexed protein position (positions[] is 0-indexed).
+        # Also gated to oracle mode for the same reason as constrain_alphabet above.
         tmpl = getattr(self, 'template', None)
         cand = getattr(tmpl, 'pos_aa_candidates', None) if tmpl is not None else None
-        if cand is not None:
+        if getattr(self, 'use_oracle', False) and cand is not None:
             synced = 0
             for j, p in enumerate(positions):
                 key = p + 1
@@ -2246,14 +2251,11 @@ class IterativeProteinTrainer:
             x_full = torch.cat([start, token_tensor[:, :-1]], dim=1)
             logits, _ = self.agent_model(x_full)
             log_probs = F.log_softmax(logits, dim=-1)
-            # The original popgen nll_loss (agent_trainer.py) returns inputs[target]
-            # = the selected token's LOG-PROB (NEGATIVE), summed over positions, so
-            # agent_likelihoods is a NEGATIVE sum of log-probs (e.g. ~-12). A previous
-            # refactor added a leading `-` here (mis-reading nll_loss as returning
-            # -p[target]), flipping the sign to POSITIVE. That inverted the
-            # `loss -= 5e3*(1/agent_likelihoods)` regularizer: instead of pushing
-            # likelihoods AWAY from 0 (stable) it pushed them TOWARD 0 -> 1/x -> +inf,
-            # which broke training (loss=inf) on every dataset incl. 4site_GB1.
+            # nll_loss returns inputs[target] = log-prob of the selected token (NEGATIVE).
+            # Summing across positions gives a NEGATIVE total. Keeping the negative sign
+            # ensures the 5e3*(1/x) regularizer pushes likelihoods AWAY from 0 (entropy
+            # bonus, prevents mode collapse). Negating would recreate the loss=inf failure
+            # mode: agent → 0 ⟹ 1/x → +∞.
             sample_log_probs = log_probs.gather(
                 2, token_tensor.unsqueeze(-1)
             ).squeeze(-1).sum(dim=1)
