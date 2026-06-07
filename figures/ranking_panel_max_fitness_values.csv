@@ -1,0 +1,21 @@
+group,method,4site_GB1,4site_PhoQ,4site_TEV,4site_TRPB,Mean rank,ms_AAV,ms_CreiLOV,ms_GFP,ms_PAB1
+Four-site,ALDE,1.5,4.0,3.0,1.5,2.5,,,,
+Four-site,MULTIevolve,4.5,2.0,5.0,1.5,3.25,,,,
+Four-site,AlphaVariant,1.5,1.0,9.0,5.0,4.125,,,,
+Four-site,ftMLDE,4.5,3.0,10.0,3.0,5.125,,,,
+Four-site,AdaLead,3.0,5.0,7.0,6.0,5.25,,,,
+Four-site,CLADE,6.5,6.0,8.0,4.0,6.125,,,,
+Four-site,AiCE,9.0,8.0,1.0,8.0,6.5,,,,
+Four-site,GreedyWalk,6.5,7.0,6.0,7.0,6.625,,,,
+Four-site,EVOLVEpro,8.0,9.0,2.0,9.0,7.0,,,,
+Four-site,Random,10.0,10.0,4.0,10.0,8.5,,,,
+Multi-site,AlphaVariant,,,,,1.25,1.0,1.0,2.0,1.0
+Multi-site,GreedyWalk,,,,,3.75,3.0,5.0,3.0,4.0
+Multi-site,AdaLead,,,,,4.25,5.0,2.0,8.0,2.0
+Multi-site,AiCE,,,,,4.25,2.0,7.0,1.0,7.0
+Multi-site,ftMLDE,,,,,4.5,4.0,3.0,8.0,3.0
+Multi-site,MULTIevolve,,,,,6.25,6.0,6.0,8.0,5.0
+Multi-site,CLADE,,,,,6.75,7.0,4.0,8.0,8.0
+Multi-site,EVOLVEpro,,,,,7.0,9.0,8.0,5.0,6.0
+Multi-site,Random,,,,,8.5,10.0,10.0,4.0,10.0
+Multi-site,ALDE,,,,,8.5,8.0,9.0,8.0,9.0
