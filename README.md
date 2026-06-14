@@ -71,23 +71,27 @@ python run_generic.py --dataset 4site_PhoQ --seed 42 \
 python run_generic.py --dataset ms_GFP --seed 42 \
     --oracle --level uniform \
     --prior_model_path priors/ms_GFP/prior_model.pt \
-    --use_mutcompute --shap_prune_alphabet \
+    --features ev_onehot --use_mutcompute --shap_prune_alphabet \
+    --max_n_mut 2 \
     --n_rounds 5 --n_steps_per_round 500 --device cuda:0 \
     --data_dir ../data
 ```
 
 | Flag | Four-site | Multi-site | Role |
 |------|:---------:|:----------:|------|
-| `--use_mutcompute` | ✓ | ✓ | Use MutCompute (not ESM-2) as the zero-shot scorer |
-| `--plm_reward_lambda 0.5` | ✓ | — | Blend MutCompute z-score into the reward (λ decays over rounds) |
-| `--shap_prune_alphabet` | ✓ | ✓ | SHAP per-position alphabet pruning (gated to oracle mode for constrain) |
+| `--features ev_onehot` | — | ✓ | Add EVmutation/plmc statistical-energy column to the aa+one-hot surrogate features (four-site uses aa+one-hot only) |
+| `--use_mutcompute` | ✓ | ✓* | MutCompute zero-shot scorer; *consumed only on four-site (reward shaping). Inert on multi-site (no consumer enabled) |
+| `--plm_reward_lambda 0.5` | ✓ | — | Blend MutCompute z-score into the REINFORCE reward (λ decays over rounds) |
+| `--shap_prune_alphabet` | ✓ | ✓ | SHAP per-position alphabet pruning (proposal filtering gated to oracle mode) |
+| `--max_n_mut 2` | — | ✓ | Cap generated variants to ≤ 2 mutations from the reference |
 | `--oracle --prior_model_path …` | — | ✓ | Score via the trained CNN oracle; GPT prior from aligned homologs |
-| `--level uniform` | — | ✓ | Uniform hotspot weighting |
+| `--level uniform` | ✓ | ✓ | Uniform initial sampling (no fitness leak) |
 
-Shared defaults (both families): `--batch_size 96 --n_rounds 5 --n_steps_per_round 500 --sigma 60`.
+Shared defaults (both families): `--batch_size 96 --n_rounds 5 --n_steps_per_round 500 --sigma 60`,
+five-model surrogate ensemble (`--surrogate ensemble`), cluster-based sampling (`--sampling cluster`).
 Multi-site priors are trained per dataset via `scripts/alphavariant/train_ms_prior.py` and
 saved to `alphavariant/priors/<dataset>/prior_model.{pt,json}`. Sweep launchers:
-`scripts/alphavariant/_sweep_av_oracle.sh` (multi-site).
+`scripts/alphavariant/run_ev_onehot.sh` / `scripts/alphavariant/_run_30seed_evonehot.sh` (multi-site, ev+onehot).
 
 ## Metrics
 
