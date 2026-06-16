@@ -164,7 +164,7 @@ default.
 | Reward R(*s*) | z(UCB) + λ·z(MutCompute), λ = 0.5 decayed linearly to 0 (`--plm_reward_lambda 0.5`, `--plm_reward_decay linear`) | UCB = μ + 2ς only (no reward shaping; `--plm_reward_lambda 0`, default) |
 | Zero-shot signal | MutCompute (structure-based), in the REINFORCE reward (`--use_mutcompute`; `--zeroshot_blend 0`, default) | EVmutation/plmc (evolutionary Potts), as a surrogate feature column (`--features ev_onehot`); MutCompute scorer flag is set but inert (no consumer enabled) |
 | SHAP alphabet pruning | On (`--shap_prune_alphabet`); min alphabet 3, SHAP threshold 0, ≥50 samples, top-10 retained | On (same settings) |
-| Proposal alphabet constraint | Off — pruning informs sampling but proposals are not filtered (constraint gated to oracle mode) | On — proposals violating the pruned alphabet are filtered |
+| Proposal alphabet constraint | Off — the SHAP-pruned alphabet is computed but not enforced; neither generation nor proposals are constrained (gated to oracle mode) | On — the pruned alphabet is propagated into the generator (sampling restricted to the pruned subspace) and proposals violating it are filtered before selection |
 | Round-1 initialization | Cluster-based (k-means on features), 10 clusters, uniform difficulty (`--sampling cluster`, `--level uniform`, defaults) | same (`--level uniform`) |
 | Per-round selection (rounds 2–5) | CLADE-2 cluster sampling of the GPT proposal pool, ranked by surrogate-predicted fitness; top-1,000 cutoff before clustering (`--sampling cluster`, `--top_k_cutoff 1000`, `--n_clusters 10`, defaults) | same |
 | Mutation cap | None (`--max_n_mut` unset) | ≤ 2 mutations from the reference (`--max_n_mut 2`) |
