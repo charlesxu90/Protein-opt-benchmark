@@ -1,8 +1,8 @@
 group,method,4site_GB1,4site_PhoQ,4site_TEV,4site_TRPB,Mean rank,ms_AAV,ms_CreiLOV,ms_GFP,ms_PAB1
 Four-site,ALDE,1.0,2.0,5.0,1.0,2.25,,,,
 Four-site,ftMLDE,3.0,4.0,2.0,2.0,2.75,,,,
-Four-site,AlphaVariant,2.0,3.0,4.0,3.0,3.0,,,,
-Four-site,MULTIevolve,4.0,1.0,9.0,4.0,4.5,,,,
+Four-site,AlphaVariant,2.0,3.0,4.0,4.0,3.25,,,,
+Four-site,MULTIevolve,4.0,1.0,9.0,3.0,4.25,,,,
 Four-site,CLADE,6.0,6.0,1.0,6.0,4.75,,,,
 Four-site,AdaLead,5.0,5.0,6.0,5.0,5.25,,,,
 Four-site,AiCE,8.0,7.0,3.0,8.0,6.5,,,,

@@ -1632,17 +1632,23 @@ class IterativeProteinTrainer:
         X = self._featurize(self.collected_seqs)
         y = np.array(self.collected_fitness)
 
-        # Train ensemble of models
+        # Train ensemble of models. Ablation: --single_surrogate uses one model only,
+        # so the predictive std (ensemble disagreement) is 0 and UCB collapses to the
+        # mean -- i.e. no ensemble scoring / no uncertainty exploration bonus.
         self.surrogate_models = []
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            models = [
-                Ridge(alpha=1.0, random_state=self.seed),
-                Ridge(alpha=0.1, random_state=self.seed + 1),
-                BayesianRidge(),
-                RandomForestRegressor(n_estimators=50, max_depth=8, random_state=self.seed + 2, n_jobs=-1),
-                GradientBoostingRegressor(n_estimators=50, max_depth=5, random_state=self.seed + 3),
-            ]
+            if getattr(self, 'single_surrogate', False):
+                models = [RandomForestRegressor(n_estimators=50, max_depth=8,
+                                                random_state=self.seed, n_jobs=-1)]
+            else:
+                models = [
+                    Ridge(alpha=1.0, random_state=self.seed),
+                    Ridge(alpha=0.1, random_state=self.seed + 1),
+                    BayesianRidge(),
+                    RandomForestRegressor(n_estimators=50, max_depth=8, random_state=self.seed + 2, n_jobs=-1),
+                    GradientBoostingRegressor(n_estimators=50, max_depth=5, random_state=self.seed + 3),
+                ]
             for model in models:
                 model.fit(X, y)
                 self.surrogate_models.append(model)
@@ -2215,6 +2221,25 @@ class IterativeProteinTrainer:
                 log_probs += self.nll_loss(log_prob, x[:, step])
         return log_probs
 
+    def _generate_pool_no_rl(self, n_pool: int) -> Tuple[List[str], np.ndarray]:
+        """Ablation (--no_rl): generate a candidate pool by sampling from the prior/agent
+        GPT *without* REINFORCE, then score with the surrogate. Tests whether the policy-
+        gradient step adds value over plain generate-and-prioritize."""
+        self.agent_model.eval()
+        pool: Dict[str, None] = {}
+        tries = 0
+        while len(pool) < n_pool and tries < 500:
+            seqs = self._filter_valid_seqs(self.sample_from_model(self.agent_model, self.batch_size))
+            for s in set(seqs):
+                pool.setdefault(s, None)
+            tries += 1
+        seqs = list(pool.keys())
+        if not seqs:
+            return [], np.array([])
+        _ucb, mu = self._predict_surrogate(seqs)
+        logger.info(f"  no-RL pool: {len(seqs)} unique candidates sampled from prior, scored by surrogate")
+        return seqs, np.asarray(mu, dtype=float)
+
     def _train_gpt_on_surrogate(
         self, n_steps: int, round_idx: int = 0
     ) -> Tuple[List[str], np.ndarray]:
@@ -2482,10 +2507,16 @@ class IterativeProteinTrainer:
                 logger.info(f"Step 2: Training surrogate on {len(self.collected_seqs)} samples...")
                 self._train_surrogate()
 
-                logger.info(f"Step 3: Training GPT for {self.n_steps_per_round} steps...")
-                generated_seqs, generated_fitness = self._train_gpt_ensemble(
-                    self.n_steps_per_round, round_idx=round_idx
-                )
+                if getattr(self, 'no_rl', False):
+                    logger.info("Step 3: --no_rl set; generating pool from prior (no REINFORCE)...")
+                    generated_seqs, generated_fitness = self._generate_pool_no_rl(
+                        max(self.top_k_cutoff * 5, self.batch_size * 50)
+                    )
+                else:
+                    logger.info(f"Step 3: Training GPT for {self.n_steps_per_round} steps...")
+                    generated_seqs, generated_fitness = self._train_gpt_ensemble(
+                        self.n_steps_per_round, round_idx=round_idx
+                    )
 
                 # Drop GPT proposals that violate per-position observed alphabets
                 if self.constrain_alphabet:
@@ -2736,6 +2767,8 @@ def run_single_experiment(
     level: str = 'medium',
     device: str = 'cuda:0',
     surrogate_kind: str = 'ensemble',
+    single_surrogate: bool = False,
+    no_rl: bool = False,
     prior_model_path: Optional[str] = None,
     constrain_alphabet: bool = False,
     features_kind: str = 'onehot',
@@ -2938,6 +2971,8 @@ def run_single_experiment(
     trainer.plm_sampling_until_round = plm_sampling_until_round
     trainer.plm_reward_until_round = plm_reward_until_round
     trainer.shap_prune_start_round = shap_prune_start_round
+    trainer.single_surrogate = single_surrogate
+    trainer.no_rl = no_rl
     trainer.use_mutcompute = use_mutcompute
     trainer.mutcompute_offset = mutcompute_offset
     trainer.zeroshot_blend = zeroshot_blend
@@ -3364,6 +3399,12 @@ Examples:
                        help="REINFORCE sigma (default: 60)")
     parser.add_argument("--device", type=str, default="cuda:0",
                        help="Device for training (default: cuda:0)")
+    parser.add_argument("--single_surrogate", action="store_true", default=False,
+                       help="Ablation: use a single RandomForest surrogate instead of the "
+                            "5-model ensemble (predictive std -> 0, UCB -> mean; no ensemble scoring).")
+    parser.add_argument("--no_rl", action="store_true", default=False,
+                       help="Ablation: skip REINFORCE; each round, generate a candidate pool "
+                            "from the prior GPT and prioritize by the surrogate (generate-and-select only).")
     parser.add_argument("--top_k_cutoff", type=int, default=1000,
                        help="Top-k cutoff for CLADE-2 sampling (default: 1000)")
     parser.add_argument("--n_clusters", type=int, default=10,
@@ -3488,6 +3529,8 @@ Examples:
             use_oracle=args.oracle,
             oracle_dir=args.oracle_dir,
             max_n_mut=args.max_n_mut,
+            single_surrogate=args.single_surrogate,
+            no_rl=args.no_rl,
         )
         results.append(result)
 

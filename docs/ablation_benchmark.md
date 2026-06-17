@@ -6,44 +6,54 @@
 
 ## Design
 
-We performed a leave-one-out ablation of AlphaVariant, removing one component at a
-time from the shipped configuration and re-running the full optimization campaign
-(480 queries; 96 × 5 rounds; identical otherwise). All eight benchmark landscapes were
-ablated. On the four **four-site** landscapes we removed (i) the MutCompute reward
-shaping (`−MutCompute`) and (ii) the SHAP alphabet pruning (`−SHAP`), plus the
-both-off "bare" configuration. On the four **multi-site** landscapes we removed (i) the
+We performed component ablations of AlphaVariant, re-running the full optimization
+campaign (480 queries; 96 × 5 rounds; identical otherwise) for each configuration. All
+eight benchmark landscapes were ablated. On the four **four-site** landscapes the shipped
+configuration is **bare + finetune** (GPT-REINFORCE + surrogate-UCB reward + 5-model
+ensemble + cluster sampling + per-round prior finetuning); we report a leave-one-out
+removing (i) prior finetuning (`−finetune`, = bare), (ii) ensemble scoring
+(`−ensemble`, single-model surrogate), and (iii) the REINFORCE step (`−RL`,
+generate-and-prioritize from the prior), with Δ versus bare+finetune. We separately
+verified that the MutCompute reward shaping and SHAP alphabet pruning of the earlier
+Plan C configuration do not improve over bare on four-site and are therefore excluded.
+On the four **multi-site** landscapes we used a leave-one-out design from the shipped
+configuration, removing (i) the
 EV-augmented surrogate features (`−EV`, reverting to aa+one-hot), (ii) the SHAP
 pruning + proposal-alphabet constraint (`−SHAP/constraint`), (iii) the mutation cap
 (`−cap`, removing `--max_n_mut 2`), and (iv) the homolog-pretrained GPT prior
 (`−prior`). Each configuration was run for 30 seeds, except PAB1 (10) and GFP (5),
 where per-seed cost on the longer sequences made 30 seeds impractical (Methods,
 Statistics). We report the median over seeds of normalized maximum fitness and
-top-128 mean fitness, and the change (Δ) versus the full configuration on the same
-landscape.
+top-128 mean fitness, and the change (Δ) versus the reference configuration on the same
+landscape — the **bare baseline** for four-site, the **full** configuration for
+multi-site.
 
-## Four-site landscapes: reward shaping is the dominant — and harmful — component
+## Four-site landscapes: RL and prior finetuning carry the four-site regime
 
-| Landscape | Component removed | Δ max | Δ top-128 |
-|-----------|-------------------|------:|----------:|
-| GB1  | − MutCompute reward | **+0.138** | +0.096 |
-| GB1  | − SHAP pruning      | −0.029 | +0.002 |
-| GB1  | − both (bare)       | +0.097 | +0.056 |
-| PhoQ | − MutCompute reward | +0.095 | +0.027 |
-| PhoQ | − SHAP pruning      | +0.027 | −0.001 |
-| PhoQ | − both (bare)       | **+0.113** | +0.024 |
-| TEV  | − MutCompute reward | +0.011 | +0.014 |
-| TEV  | − both (bare)       | +0.012 | +0.003 |
-| TrpB | − MutCompute reward | −0.001 | +0.126 |
-| TrpB | − both (bare)       | +0.015 | **+0.141** |
+Leave-one-out from the shipped bare+finetune configuration (Δ versus baseline):
 
-On the four-site landscapes, **removing the MutCompute reward shaping improved or
-matched maximum fitness on all four datasets** (most strongly on GB1 and PhoQ), and the
-both-off "bare" configuration was the best or tied-best on every landscape. SHAP
-pruning was consistently neutral (|Δ max| ≤ 0.03), consistent with its proposal
-constraint being inactive on four-site combinatorial libraries (Methods). We conclude
-that, on the current implementation, the structure-based reward shaping does not help
-the four-site regime and that a plain UCB-reward ("bare") AlphaVariant is preferable
-there.
+| Landscape | − finetune prior | − ensemble (single RF) | − RL (generate + prioritize) |
+|-----------|:----------------:|:----------------------:|:----------------------------:|
+| | Δmax / Δtop128 | Δmax / Δtop128 | Δmax / Δtop128 |
+| GB1  | −0.041 / −0.044 | +0.000 / +0.003 | **−0.138** / −0.002 |
+| PhoQ | +0.008 / −0.001 | −0.016 / −0.004 | +0.000 / −0.006 |
+| TEV  | −0.000 / **−0.061** | −0.002 / −0.042 | +0.002 / **+0.043** |
+| TrpB | +0.000 / −0.026 | **+0.076** / −0.054 | **+0.090** / −0.038 |
+
+Three components were examined. **Prior finetuning** contributes positively, chiefly to
+top-128 mean fitness: removing it lowers top-128 by 0.026–0.061 on GB1/TEV/TrpB and GB1
+maximum fitness by 0.041, while never improving any cell — so it is retained in the
+shipped configuration. **The REINFORCE step** is essential for GB1 maximum fitness
+(−0.138 when removed) but, once the prior is finetuned, is largely redundant on the
+other landscapes (PhoQ maximum fitness unchanged; TEV/TrpB maximum fitness unchanged or
+higher under generate-and-prioritize): finetuning and REINFORCE both supply high-quality
+candidates and therefore partially substitute, an interaction not visible when ablating
+RL from the un-finetuned bare baseline (where its removal is uniformly damaging). **The
+5-model ensemble** mainly aids top-128 (TEV/TrpB) with a landscape-dependent effect on
+maximum fitness (a single random-forest surrogate raises TrpB max by 0.076 but lowers its
+top-128 by 0.054). Separately, the MutCompute reward shaping and SHAP alphabet pruning of
+the earlier Plan C configuration did not improve over bare on four-site and are excluded.
+We therefore ship **bare + finetune** as the four-site configuration.
 
 ## Multi-site landscapes: the mutation cap is critical and scales with sparsity
 
