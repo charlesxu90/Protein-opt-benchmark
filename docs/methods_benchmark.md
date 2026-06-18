@@ -112,7 +112,7 @@ pipeline.
 | MULTI-evolve | Supervised / active learning | Bootstrap neural-network ensemble                              | Highest-predicted batch                             | (ref.) |
 | AiCE         | Structure-guided            | ProteinMPNN structure-conditioned per-position amino-acid frequencies (1,000 samples, T = 0.5), blended with observed high-fitness frequencies | Highest summed log-frequency | (ref.) |
 | AdaLead      | Generative / policy search  | Ensemble surrogate-guided                                      | Evolutionary recombination + mutation               | (ref.) |
-| **AlphaVariant** | Generative / policy search | GPT sequence prior + REINFORCE; five-model surrogate-ensemble UCB reward, with MutCompute reward shaping and SHAP alphabet pruning | Policy-gradient sampling from the trained generator | this work |
+| **AlphaVariant** | Generative / policy search | GPT sequence prior + REINFORCE; five-model surrogate-ensemble UCB reward; four-site adds per-round prior finetuning, multi-site adds EV surrogate features + SHAP alphabet pruning + a mutation cap | Policy-gradient sampling from the trained generator | this work |
 
 All methods operated under the same 480-query budget (96 × 5 rounds), 30 seeds, and
 metric pipeline (see above). On multi-site landscapes, library-enumerating methods
@@ -121,16 +121,16 @@ enumerated library, retaining their own surrogate and selection rule.
 
 ## AlphaVariant configuration
 
-AlphaVariant was run in a single configuration across all landscapes: a GPT sequence
-prior optimized by REINFORCE against a five-model surrogate ensemble, with structure-
-based (MutCompute (ref.)) reward shaping and SHAP-based per-position alphabet pruning.
-Four-site and multi-site campaigns differed only in the landscape source and the
-sequence prior:
+AlphaVariant is a GPT sequence prior optimized by REINFORCE against a five-model
+surrogate ensemble with UCB acquisition. The shipped **four-site** configuration
+("bare + finetune") uses an in-run prior finetuned on the collected sequences each round,
+with no reward shaping or alphabet pruning. The **multi-site** configuration uses a
+homolog-pretrained prior with EV-augmented surrogate features, a mutation cap and
+SHAP alphabet pruning. The two campaigns are otherwise identical:
 
 ```bash
-# Four-site (lookup landscape)
-python run_generic.py --dataset 4site_PhoQ --seed <S> \
-    --use_mutcompute --plm_reward_lambda 0.5 --shap_prune_alphabet
+# Four-site (lookup landscape; bare + per-round prior finetuning)
+python run_generic.py --dataset 4site_PhoQ --seed <S> --finetune_prior
 
 # Multi-site (learned-oracle landscape; GPT prior from aligned homologs)
 python run_generic.py --dataset ms_GFP --seed <S> \
@@ -153,6 +153,7 @@ default.
 |---------|-----------|------------|
 | Fitness landscape | Exact lookup table | Learned CNN oracle (`--oracle`) |
 | Sequence prior | In-run GPT prior, no homolog pretraining (`--prior_model_path` unset) | GPT prior pretrained on aligned homologs (`--prior_model_path priors/<ds>/prior_model.pt`) |
+| Prior finetuning (per round) | On — finetuned on collected sequences each round, 10 epochs, lr 1e-4 (`--finetune_prior`) | Off (uses the pretrained prior directly) |
 | Generator | 4-layer GPT, 4 heads, embedding dim 128 | same |
 | RL objective | Augmented-likelihood REINFORCE | same |
 | Reward scale σ | 60 (`--sigma 60`, default) | 60 |
@@ -161,41 +162,40 @@ default.
 | GPT ensemble members | 1 (`--n_gpt_ensemble 1`, default) | 1 |
 | Surrogate model | 5-model ensemble: 2× ridge, Bayesian ridge, random forest, gradient boosting (`--surrogate ensemble`, default) | same |
 | Surrogate features | aa+one-hot: per-position one-hot + 4 physicochemical descriptors (volume, hydropathy, area, polarity) (`--features onehot`, default) | aa+one-hot + standardized EVmutation/plmc statistical-energy column (`--features ev_onehot`) |
-| Reward R(*s*) | z(UCB) + λ·z(MutCompute), λ = 0.5 decayed linearly to 0 (`--plm_reward_lambda 0.5`, `--plm_reward_decay linear`) | UCB = μ + 2ς only (no reward shaping; `--plm_reward_lambda 0`, default) |
-| Zero-shot signal | MutCompute (structure-based), in the REINFORCE reward (`--use_mutcompute`; `--zeroshot_blend 0`, default) | EVmutation/plmc (evolutionary Potts), as a surrogate feature column (`--features ev_onehot`); MutCompute scorer flag is set but inert (no consumer enabled) |
-| SHAP alphabet pruning | On (`--shap_prune_alphabet`); min alphabet 3, SHAP threshold 0, ≥50 samples, top-10 retained | On (same settings) |
-| Proposal alphabet constraint | Off — the SHAP-pruned alphabet is computed but not enforced; neither generation nor proposals are constrained (gated to oracle mode) | On — the pruned alphabet is propagated into the generator (sampling restricted to the pruned subspace) and proposals violating it are filtered before selection |
+| Reward R(*s*) | UCB = μ + 2ς only (no reward shaping; `--plm_reward_lambda 0`, default) | UCB = μ + 2ς only (no reward shaping; `--plm_reward_lambda 0`, default) |
+| Zero-shot signal | None (no reward shaping; `--use_mutcompute` unset) | EVmutation/plmc (evolutionary Potts), as a surrogate feature column (`--features ev_onehot`) |
+| SHAP alphabet pruning | Off (`--shap_prune_alphabet` unset) | On (`--shap_prune_alphabet`); min alphabet 3, SHAP threshold 0, ≥50 samples, top-10 retained |
+| Proposal alphabet constraint | Off (no pruning) | On — the pruned alphabet is propagated into the generator (sampling restricted to the pruned subspace) and proposals violating it are filtered before selection |
 | Round-1 initialization | Cluster-based (k-means on features), 10 clusters, uniform difficulty (`--sampling cluster`, `--level uniform`, defaults) | same (`--level uniform`) |
 | Per-round selection (rounds 2–5) | CLADE-2 cluster sampling of the GPT proposal pool, ranked by surrogate-predicted fitness; top-1,000 cutoff before clustering (`--sampling cluster`, `--top_k_cutoff 1000`, `--n_clusters 10`, defaults) | same |
 | Mutation cap | None (`--max_n_mut` unset) | ≤ 2 mutations from the reference (`--max_n_mut 2`) |
 
-The two campaigns share the same GPT generator, RL objective, surrogate ensemble, budget
-and σ, and differ in five respects: (i) the landscape source (lookup table versus learned
-oracle); (ii) the sequence prior (in-run versus homolog-pretrained); (iii) the surrogate
-features (aa+one-hot — per-position one-hot plus four physicochemical descriptors — for
-four-site, versus the same aa+one-hot augmented with an EVmutation statistical-energy
-column for multi-site);
-(iv) the reward (four-site blends a decaying MutCompute term into the reward, multi-site
-uses the UCB reward alone); and (v) generation constraints (multi-site caps proposals at
-≤ 2 mutations from the reference and filters them on the SHAP-pruned alphabet, whereas
-four-site applies neither constraint).
+The two campaigns share the same GPT generator, RL objective, surrogate ensemble, UCB
+reward, budget and σ, and differ in four respects: (i) the landscape source (lookup table
+versus learned oracle); (ii) the sequence prior (four-site uses an in-run prior finetuned
+on the collected sequences each round; multi-site uses a homolog-pretrained prior that is
+not finetuned); (iii) the surrogate features (aa+one-hot — per-position one-hot plus four
+physicochemical descriptors — for four-site, versus the same aa+one-hot augmented with an
+EVmutation statistical-energy column for multi-site); and (iv) generation constraints
+(multi-site caps proposals at ≤ 2 mutations from the reference and filters them on the
+SHAP-pruned alphabet, whereas four-site applies neither). Neither campaign uses
+reward shaping or a zero-shot reward term; the earlier Plan C four-site setting
+(MutCompute reward + SHAP pruning) was found not to help and was dropped (Supplementary
+ablation).
 
 The per-round optimization loop was identical in structure across regimes. Each campaign
 began with a single cluster-based initialization round: k-means on the (aa+one-hot)
 features selected 96 diverse starting sequences, with no surrogate, reward or zero-shot
 score applied. In each of the four subsequent rounds AlphaVariant (i) re-fit the
-five-model surrogate on all sequences collected so far (96 growing to 480); (ii) trained
-the GPT generator for 500 REINFORCE steps against the reward R(*s*); (iii) sampled a
+five-model surrogate on all sequences collected so far (96 growing to 480) — on four-site
+the GPT prior was first finetuned on the collected sequences; (ii) trained the GPT
+generator for 500 REINFORCE steps against the UCB reward R(*s*); (iii) sampled a
 candidate pool from the trained generator; and (iv) selected the next 96 sequences from
 that pool by CLADE-2 cluster sampling — retaining the top-1,000 candidates by
 surrogate-predicted fitness, clustering them, and taking the best-per-cluster to balance
-predicted fitness against batch diversity. Two points follow from this structure. First,
-the evaluated batch is always prioritized by the **surrogate's predicted fitness** (the
-cluster-stratified CLADE-2 selection), in both regimes; the per-round selection metric is
-the same. Second, the MutCompute zero-shot score (four-site only) acts at step (ii),
-shaping the *generator's* reward and thereby the distribution of proposals — it does not
-score the round-1 initialization or the batch-selection step, both of which are identical
-across regimes. On multi-site, generation at step (iii) was additionally restricted to
+predicted fitness against batch diversity. The evaluated batch is always prioritized by
+the **surrogate's predicted fitness** (the cluster-stratified CLADE-2 selection) in both
+regimes. On multi-site, generation at step (iii) was additionally restricted to
 ≤ 2 mutations from the reference and to the SHAP-pruned per-position alphabet, whereas on
 four-site the proposal pool was unconstrained.
 
