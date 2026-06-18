@@ -120,3 +120,53 @@ variants" subsection is round-specific and unchanged.)*
 - Net effect: the GPT-prior + REINFORCE-objective + reward + mutational-space narrative is
   stated once (Section A); the Benchmarking and savinase sections keep only their distinct
   instantiations.
+
+---
+
+## E. Savinase campaign — remaining de-duplications (round 2)
+
+> Sections A–D above have been applied. The remaining duplications are **within the
+> second savinase round**: the model evaluation, the prior description, and the
+> DGC-libgen library workflow are each stated twice. Below are merged, paste-ready
+> replacements for the three round-2 subsections; round 1 and round 3 are unchanged
+> (round 3 already cross-references round 2).
+
+**E1 — "Predictive model" (replace both redundant paragraphs with one).**
+
+> We evaluated nine protein language models (pLMs) alongside the ev+onehot model on the
+> first-round activity data. For each pLM, PCA preprocessing of the embeddings followed
+> by a support-vector-regression head gave the best performance; the data were split into
+> train/test sets across 20 seeds and models ranked by mean Spearman correlation.
+> ev+onehot, ESM-3B, ProtT5-XL and ProtAlbert performed best; ev+onehot achieved the
+> highest correlation (Spearman 0.60; Figure 5b) and, being fast at inference, was used as
+> the predictive model in the RL process.
+
+**E2 — "Prior model" (drop the redundant opening sentence; state homolog retrieval once;
+keep only round-2 differences).**
+
+> Unlike the first round, which used subtilisin BPN′ as the template, the second round used
+> savinase as the template. A VariantGPT prior (Methods, "The AlphaVariant framework") was
+> pretrained on savinase homologues — retrieved from UniRef100 with JackHmmer (80/20
+> train/test, 20 epochs) — and fine-tuned on the 2,414 first-round variants; the fine-tuned
+> model served as the prior in the RL process.
+
+*(Also remove the duplicate "homologous sequences of savinase … via JackHmmer" sentence
+from the round-2 "Datasets" paragraph — it is now stated here.)*
+
+**E3 — "Library design" (merge the two DGC-libgen descriptions into one).**
+
+> For each run, the top 10,000 variants by ev+onehot score were re-scored by three pLMs
+> (ESM-2b, ProtT5-XL, ProtAlbert) and ensemble-ranked by mean rank. Libraries were then
+> generated with DGC-libgen: among the top variants, a position was fixed when one amino
+> acid exceeded 0.75 frequency, amino acids below 0.10 frequency were dropped, and DYNAMCC0
+> converted the retained amino acids at each position into degenerate codons; a WebLogo was
+> produced per library (Extended Fig. 3g). Because the six per-run libraries were highly
+> similar, they were merged — pooling unique positions and permitted amino acids and
+> recomputing degenerate codons with DYNAMCC0 — into a single library of size 17,280
+> (Fig. 4d).
+
+**E4 — round 2 "RL optimization" and round 3 are unchanged.** Round 2 already states only
+its differences from round 1 (six RL tasks seeded by the top-six first-round variants;
+ev+onehot reward; 3,000 steps, batch 60). Round 3 already references round 2 for the prior
+and the framework objective for the multi-objective reward (combined score). No further
+edits needed.
