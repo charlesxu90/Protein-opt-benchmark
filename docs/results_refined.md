@@ -23,3 +23,44 @@ the measured data — where the learned oracle is reliable — is what makes pol
 search effective on non-enumerable landscapes, and that the value of this constraint grows
 with the size of the search space, precisely the regime in which AlphaVariant most
 outperforms the baselines.
+
+---
+
+# Four-site Results treatment — two options to compare
+
+> Decision: keep the four-site comparison in the main text (Option A, compact, framed as
+> the setup for the regime contrast) versus de-emphasize it (Option B, brief conclusion in
+> main text with per-dataset numbers/rankings moved to Extended Data / SI). Both use the
+> reproducible bare+finetune numbers (AlphaVariant: GB1 1.00, TrpB 0.83, PhoQ 0.46,
+> TEV 0.37; max-fitness rank 4th, top-128 rank 3rd). Pick one to replace the current
+> four-site paragraph.
+
+## Option A — keep in main text (compact, regime-contrast emphasis)
+
+On the densely sampled four-site landscapes — the regime in which supervised surrogates
+are most effective because every candidate is measured — AlphaVariant performed on par
+with the strongest baselines without any per-landscape tuning. It reached the global
+optimum on GB1 (median normalized maximum fitness 1.00, tied with ALDE) and obtained 0.83
+(TrpB), 0.46 (PhoQ) and 0.37 (TEV), ranking fourth by mean rank on maximum fitness and
+third on top-128 mean fitness (Figure 2c,e), with ALDE the strongest four-site method
+overall. This regime is the least representative of practical engineering, where
+exhaustive labels are rarely available; AlphaVariant's decisive advantage instead emerged
+on the larger, non-enumerable multi-site landscapes (below).
+
+*Pros:* preserves the eight-landscape benchmark and the regime-contrast narrative; shows
+no cherry-picking. *Cons:* states a fourth-place result in the main text.
+
+## Option B — de-emphasize (brief conclusion in main text; details to Extended Data / SI)
+
+On the four densely sampled four-site landscapes — the regime in which supervised
+surrogates are most effective because every candidate is measured — AlphaVariant was
+competitive with the strongest baselines without per-landscape tuning (Figure 2c,e;
+per-dataset values and rankings in Extended Data Table X). Its decisive advantage emerged
+on the larger, non-enumerable multi-site landscapes (below).
+
+*(Move the per-dataset four-site values and the max/top-128 rankings to an Extended Data
+table or Supplementary Note; keep Figure 2c,e as is.)*
+
+*Pros:* tightens the main text and keeps focus on the multi-site advantage and the savinase
+campaign. *Cons:* a reviewer may still ask for the four-site numbers (hence keep them one
+click away in Extended Data, not removed).
