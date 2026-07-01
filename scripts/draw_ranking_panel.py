@@ -26,16 +26,21 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_FIGDIR = os.path.join(ROOT, "figures")
 
-# --- palette (matches the preferred prototype) -----------------------------
-ALPHA_RED = "#A51E2D"
-DOT_GRAY = "#B8B8B8"
-DOT_GRAY_EDGE = "#8C8C8C"
+# --- palette -----------------------------------------------------------------
+# AlphaVariant colour unified with the performance figures (vermilion). Per-
+# dataset dots darkened from the prototype (#B8B8B8) so they survive printing
+# and typesetting.
+sys.path.insert(0, ROOT)
+from utils.plot_style_utils import VERMILION, apply_nature_rcparams, save_figure  # noqa: E402
+
+ALPHA_RED = VERMILION
+DOT_GRAY = "#8A8A8A"
+DOT_GRAY_EDGE = "#5F5F5F"
 LINE_GRAY = "#D4D4D4"
 GRID_GRAY = "#E6E6E6"
 TEXT_GRAY = "#444444"
@@ -65,7 +70,7 @@ GROUPS = {
         "allow": MAIN_METHODS_4SITE,
         "dataset_labels": {
             "4site_GB1": "GB1", "4site_PhoQ": "PhoQ",
-            "4site_TEV": "TEV", "4site_TRPB": "TrpB",
+            "4site_TRPB": "TrpB",
         },
     },
     "Multi-site": {
@@ -73,22 +78,12 @@ GROUPS = {
         "allow": MAIN_METHODS_MULTISITE,
         "dataset_labels": {
             "ms_AAV": "AAV", "ms_CreiLOV": "CreiLOV",
-            "ms_GFP": "GFP", "ms_PAB1": "PAB1",
+            "ms_PAB1": "PAB1",
         },
     },
 }
 
-mpl.rcParams.update({
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-    "font.size": 7.5,
-    "axes.linewidth": 0.65,
-    "xtick.major.width": 0.6,
-    "ytick.major.width": 0.6,
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-    "savefig.dpi": 600,
-})
+apply_nature_rcparams({"font.size": 7.5})
 
 
 def build_rank_table(group_cfg: dict, metric_col: str) -> pd.DataFrame:
@@ -151,10 +146,10 @@ def _draw_group(ax, table: pd.DataFrame, title: str, n_methods: int) -> None:
             lab.set_color(ALPHA_RED)
             lab.set_fontweight("bold")
 
-    ax.set_xlim(worst + 0.4, 0.55)  # reversed: best (1) on the right
+    ax.set_xlim(0.55, worst + 0.4)  # Rank 1 (best) on the left
     ticks = sorted({1, 2, 4, 6, 8, worst})
     ax.set_xticks([t for t in ticks if t <= worst])
-    ax.set_xlabel("Mean rank (lower is better)", fontsize=7.2, labelpad=5)
+    ax.set_xlabel("Mean rank (1 = best)", fontsize=7.2, labelpad=14)
     ax.grid(axis="x", color=GRID_GRAY, lw=0.6)
     ax.set_axisbelow(True)
     ax.spines[["top", "right", "left"]].set_visible(False)
@@ -162,31 +157,48 @@ def _draw_group(ax, table: pd.DataFrame, title: str, n_methods: int) -> None:
     ax.tick_params(axis="y", length=0, pad=3)
     ax.tick_params(axis="x", labelsize=7.0, length=3.0, pad=2)
 
+    # directional indicator: best rank sits on the left
+    ax.annotate("better", xy=(0.0, -0.155), xytext=(0.30, -0.155),
+                xycoords="axes fraction", textcoords="axes fraction",
+                fontsize=6.6, color=TEXT_GRAY, va="center", ha="left",
+                arrowprops=dict(arrowstyle="->", color=TEXT_GRAY, lw=0.8))
+
 
 def draw_panel(tables: Dict[str, pd.DataFrame], metric_label: str,
-               outdir: str, prefix: str) -> List[str]:
-    fig = plt.figure(figsize=(5.6, 3.25), dpi=600)
+               outdir: str, prefix: str, n_seeds: int = 30) -> List[str]:
+    import matplotlib.lines as mlines
+    import matplotlib.patches as mpatches
+
+    fig = plt.figure(figsize=(5.6, 3.55), dpi=600)
     gs = fig.add_gridspec(1, 2, left=0.135, right=0.985,
-                          bottom=0.27, top=0.80, wspace=0.55)
+                          bottom=0.30, top=0.80, wspace=0.55)
     for gi, (group, table) in enumerate(tables.items()):
         ax = fig.add_subplot(gs[0, gi])
         _draw_group(ax, table, f"{group} rankings", len(table))
 
     fig.text(0.045, 0.945, "Average method ranking across datasets",
              fontsize=10.6, fontweight="bold")
-    fig.text(0.045, 0.875, f"Ranked by {metric_label} (median over 30 seeds)",
-             fontsize=7.4, color=TEXT_GRAY)
-    fig.text(0.135, 0.085,
-             "Gray points: individual datasets;  open circles: mean rank;  "
-             "red: AlphaVariant. Lower rank = better.",
-             fontsize=6.3, color=TEXT_GRAY)
+    fig.text(0.045, 0.875,
+             f"Ranked by {metric_label} (median across {n_seeds} independent seeds per method per dataset)",
+             fontsize=7.0, color=TEXT_GRAY)
 
-    os.makedirs(outdir, exist_ok=True)
-    paths = []
-    for ext in ("pdf", "png"):
-        p = os.path.join(outdir, f"{prefix}.{ext}")
-        fig.savefig(p, dpi=600, bbox_inches="tight")
-        paths.append(p)
+    # Keyed legend with explicit symbol descriptions
+    legend_handles = [
+        mlines.Line2D([0], [0], marker="o", color="none", markersize=5.5,
+                      markerfacecolor=DOT_GRAY, markeredgecolor=DOT_GRAY_EDGE,
+                      markeredgewidth=0.4, label="Rank in one dataset"),
+        mlines.Line2D([0], [0], marker="o", color="none", markersize=7,
+                      markerfacecolor="white", markeredgecolor="#202020",
+                      markeredgewidth=1.1, label="Mean rank across datasets"),
+        mlines.Line2D([0], [0], marker="o", color="none", markersize=7.5,
+                      markerfacecolor=ALPHA_RED, markeredgecolor="white",
+                      markeredgewidth=0.75, label="AlphaVariant mean rank"),
+    ]
+    fig.legend(handles=legend_handles, loc="lower center",
+               bbox_to_anchor=(0.56, 0.00), ncol=3, frameon=False,
+               fontsize=6.0, handletextpad=0.4, columnspacing=1.0)
+
+    paths = save_figure(fig, outdir, prefix)
     plt.close(fig)
     return paths
 

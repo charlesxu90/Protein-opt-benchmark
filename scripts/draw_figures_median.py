@@ -1,12 +1,18 @@
 #!/usr/bin/env python
 """
-Render the main-figure max-fitness bar chart (and the supplementary
-top-128 mean-fitness bar chart) using median + Q1/Q3 IQR error bars
-instead of the mean ± std presentation in `draw_figures.py`.
+Render the main-figure max-fitness dot plot (and the supplementary
+top-128 mean-fitness dot plot) as horizontal dots with Q1/Q3 IQR whiskers.
+
+Nature-style presentation:
+  * horizontal layout (method names as y-tick labels, no rotation),
+  * dot = median, whiskers = Q1-Q3 (IQR),
+  * a single fixed method order per group (by mean rank across the group's
+    datasets, best at top) shared by every panel,
+  * vermilion AlphaVariant + two-tier gray baselines (no rainbow).
 
 Supports two tasks (select with --task):
-    4site     : the 4-site combinatorial benchmark (GB1/PhoQ/TEV/TrpB)  [default]
-    multisite : the multi-site learned-oracle benchmark (AAV/CreiLOV/GFP/PAB1)
+    4site     : the 4-site combinatorial benchmark (GB1/PhoQ/TrpB)  [default]
+    multisite : the multi-site learned-oracle benchmark (AAV/CreiLOV/PAB1)
 
 Input: a CSV with columns
     dataset, method,
@@ -24,45 +30,18 @@ import os
 import sys
 import numpy as np
 import pandas as pd
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from utils.plot_style_utils import CAT_PALETTE, GRAY, prettify_ax
+from utils.plot_style_utils import (
+    PRIMARY_COMPARISON, VERMILION, method_color,
+    apply_nature_rcparams, save_figure, style_axis_hbar,
+)
 
 _DEFAULT_BASE = "/home/xux/Desktop/AlphaVariant/Benchmark/figures"
 
-mpl.rcParams.update({
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-    "axes.linewidth": 0.65,
-    "axes.labelsize": 8.2,
-    "axes.titlesize": 8.8,
-    "xtick.labelsize": 6.1,
-    "ytick.labelsize": 6.8,
-    "figure.dpi": 180,
-    "savefig.dpi": 600,
-})
-
-# Color map from seaborn's colorblind-friendly CAT_PALETTE (utils/plot_style_utils.py).
-# AlphaVariant pinned to a saturated red index so it visually stands out as the
-# shipped method; other methods take adjacent palette entries.
-colors = {
-    "Random":       GRAY,
-    "GreedyWalk":   CAT_PALETTE[0],   # blue
-    "ALDE":         CAT_PALETTE[1],   # orange
-    "FLEXS":        CAT_PALETTE[2],   # green (display label: AdaLead)
-    "AdaLead":      CAT_PALETTE[2],   # green (multi-site AdaLead method)
-    "AiCE":         CAT_PALETTE[4],   # purple
-    "ftMLDE":       CAT_PALETTE[5],   # brown
-    "CLADE":        CAT_PALETTE[6],   # pink
-    "AlphaVariant": CAT_PALETTE[3],   # red — highlighted method
-    "MULTIevolve":  CAT_PALETTE[7],   # gray
-    "EVOLVEpro":    CAT_PALETTE[8],   # yellow
-}
+apply_nature_rcparams({"axes.labelsize": 8.2, "xtick.labelsize": 6.8})
 
 # Display-name mapping: FLEXS algorithm is AdaLead (canonical name in the
 # directed-evolution literature); user requested label rename in figures.
@@ -77,10 +56,10 @@ TASKS = {
     "4site": {
         "default_csv": os.path.join(_DEFAULT_BASE, "alphavariant_comparison_median_iqr.csv"),
         "default_outdir": _DEFAULT_BASE,
-        "dataset_order": ["4site_GB1", "4site_PhoQ", "4site_TEV", "4site_TRPB"],
+        "dataset_order": ["4site_GB1", "4site_PhoQ", "4site_TRPB"],
         "dataset_labels": {
             "4site_GB1": "GB1 4-site", "4site_PhoQ": "PhoQ 4-site",
-            "4site_TEV": "TEV 4-site", "4site_TRPB": "TrpB 4-site",
+            "4site_TRPB": "TrpB 4-site",
         },
         # Main-figure method allow-list (drops AlphaVariant ablation rows;
         # delta_cs excluded per user request).
@@ -96,10 +75,10 @@ TASKS = {
     "multisite": {
         "default_csv": os.path.join(_DEFAULT_BASE, "ms_oracles", "multisite_oracle_median_iqr.csv"),
         "default_outdir": os.path.join(_DEFAULT_BASE, "ms_oracles"),
-        "dataset_order": ["ms_AAV", "ms_CreiLOV", "ms_GFP", "ms_PAB1"],
+        "dataset_order": ["ms_AAV", "ms_CreiLOV", "ms_PAB1"],
         "dataset_labels": {
             "ms_AAV": "AAV multi-site", "ms_CreiLOV": "CreiLOV multi-site",
-            "ms_GFP": "GFP multi-site", "ms_PAB1": "PAB1 multi-site",
+            "ms_PAB1": "PAB1 multi-site",
         },
         "main_methods": {"Random", "GreedyWalk", "ALDE", "CLADE", "ftMLDE",
                          "AdaLead", "MULTIevolve", "EVOLVEpro", "AiCE", "AlphaVariant"},
@@ -112,106 +91,103 @@ TASKS = {
 }
 
 
-def lighten(color, amount=0.12):
-    """Lighten a color toward white. Accepts hex string or RGB tuple."""
-    rgb = np.asarray(mcolors.to_rgb(color), dtype=float)
-    return tuple(rgb + (1 - rgb) * amount)
-
-
 def display_name(method: str) -> str:
     """Return the figure-display label for a method (e.g. FLEXS → AdaLead)."""
     return DISPLAY_NAMES.get(method, method)
 
 
-def style_axis(ax, ylim, yticks):
-    ax.set_ylim(*ylim)
-    ax.set_yticks(yticks)
-    ax.yaxis.grid(True, color="#E6E6E6", linewidth=0.55, zorder=0)
-    ax.xaxis.grid(False)
-    ax.tick_params(axis="both", length=2.4, width=0.55, color="#333333", pad=2)
-    for spine in ["top", "right"]:
-        ax.spines[spine].set_visible(False)
-    for spine in ["left", "bottom"]:
-        ax.spines[spine].set_color("#333333")
-        ax.spines[spine].set_linewidth(0.6)
+def global_method_order(df, cfg, metric_med):
+    """Return one fixed method order for the group, best → worst.
+
+    Order = ascending mean rank across the group's datasets, where per dataset
+    rank 1 = best median. This single order is reused for every panel so the eye
+    can track a method across datasets (reviewer: 'consistent ordering').
+    """
+    datasets = cfg["dataset_order"]
+    main_methods = cfg["main_methods"]
+    sub = df[(df["dataset"].isin(datasets)) & (df["method"].isin(main_methods))].copy()
+    sub["rank"] = sub.groupby("dataset")[metric_med].rank(ascending=False, method="average")
+    mean_rank = sub.groupby("method")["rank"].mean().sort_values()
+    return mean_rank.index.tolist()
 
 
 def plot_metric_figure(df, cfg, outdir, metric_med, metric_q1, metric_q3,
                        ylabel, title, output_prefix, panel_letter, ylim, yticks,
                        seed_note):
+    # `ylim`/`yticks` describe the fitness axis; in the horizontal layout the
+    # fitness axis is x, so they are applied as xlim/xticks.
+    xlim, xticks = ylim, yticks
     dataset_order = cfg["dataset_order"]
     dataset_labels = cfg["dataset_labels"]
     main_methods = cfg["main_methods"]
     highlight = cfg["highlight"]
 
+    # Fixed order (best→worst); plotted bottom→top so the best sits at the top.
+    order_best_first = global_method_order(df, cfg, metric_med)
+    methods_btt = order_best_first[::-1]
+    y = np.arange(len(methods_btt))
+
     n_panels = len(dataset_order)
-    fig, axes = plt.subplots(1, n_panels, figsize=(7.25 * n_panels / 4, 2.72),
+    fig, axes = plt.subplots(1, n_panels, figsize=(2.15 * n_panels + 1.35, 3.35),
                              sharey=True)
     axes = np.atleast_1d(axes)
     fig.patch.set_facecolor("white")
 
     for col, (ax, dataset) in enumerate(zip(axes, dataset_order)):
-        sub = df[(df["dataset"] == dataset) & (df["method"].isin(main_methods))].copy()
-        # Primary sort: median ascending. Secondary sort: Q1 ascending — breaks
-        # ceiling ties by putting the tightest lower quartile to the right.
-        sub = sub.sort_values([metric_med, metric_q1], ascending=[True, True])
-        methods = sub["method"].tolist()
-        med = sub[metric_med].to_numpy(dtype=float)
-        q1 = sub[metric_q1].to_numpy(dtype=float)
-        q3 = sub[metric_q3].to_numpy(dtype=float)
+        sub = df[(df["dataset"] == dataset) & (df["method"].isin(main_methods))]
+        sub = sub.set_index("method")
+        med = np.array([sub.loc[m, metric_med] if m in sub.index else np.nan
+                        for m in methods_btt], dtype=float)
+        q1 = np.array([sub.loc[m, metric_q1] if m in sub.index else np.nan
+                       for m in methods_btt], dtype=float)
+        q3 = np.array([sub.loc[m, metric_q3] if m in sub.index else np.nan
+                       for m in methods_btt], dtype=float)
         err_lo = np.clip(med - q1, 0.0, None)
         err_hi = np.clip(q3 - med, 0.0, None)
-        yerr = np.vstack([err_lo, err_hi])
-        x = np.arange(len(methods))
 
-        bar_colors = [lighten(colors[m], 0.05 if m in highlight else 0.16) for m in methods]
-        edge_colors = ["#111111" if m in highlight else "white" for m in methods]
-        line_widths = [0.80 if m in highlight else 0.30 for m in methods]
+        pt_colors = [method_color(m) for m in methods_btt]
+        pt_sizes = [40 if m in highlight else 26 for m in methods_btt]
+        pt_edges = ["#111111" if m in highlight else "white" for m in methods_btt]
+        pt_edge_w = [0.9 if m in highlight else 0.45 for m in methods_btt]
 
-        bars = ax.bar(x, med, width=0.76, color=bar_colors, edgecolor=edge_colors,
-                      linewidth=line_widths, zorder=3)
-        ax.errorbar(x, med, yerr=yerr, fmt="none", ecolor="#333333",
-                    elinewidth=0.6, capsize=1.8, capthick=0.55, zorder=4)
+        # IQR whiskers first (behind the dots).
+        ax.errorbar(med, y, xerr=np.vstack([err_lo, err_hi]), fmt="none",
+                    ecolor="#5A5A5A", elinewidth=0.7, capsize=2.0,
+                    capthick=0.6, zorder=3)
+        ax.scatter(med, y, s=pt_sizes, c=pt_colors, edgecolors=pt_edges,
+                   linewidths=pt_edge_w, zorder=4, clip_on=False)
 
-        offset = (ylim[1] - ylim[0]) * 0.018
-        for bar, m_val, hi in zip(bars, med, err_hi):
-            ax.text(bar.get_x() + bar.get_width() / 2, m_val + hi + offset,
-                    f"{m_val:.3f}",
-                    ha="center", va="bottom", fontsize=5.0, rotation=90,
-                    color="#303030", clip_on=False)
-
-        ax.set_title(dataset_labels[dataset], pad=7, fontweight="bold")
-        ax.set_xticks(x)
-        display_labels = [display_name(m) for m in methods]
-        ax.set_xticklabels(display_labels, rotation=60, ha="right", rotation_mode="anchor")
-        highlight_display = {display_name(m) for m in highlight}
-        if highlight:
-            highlight_color = mcolors.to_hex(colors["AlphaVariant"])
-            for tick in ax.get_xticklabels():
+        ax.set_title(dataset_labels[dataset], pad=6, fontweight="bold")
+        ax.set_ylim(-0.6, len(methods_btt) - 0.4)
+        ax.set_yticks(y)
+        style_axis_hbar(ax, xlim, xticks)
+        ax.set_xlabel(ylabel, labelpad=3)
+        if col == 0:
+            ax.set_yticklabels([display_name(m) for m in methods_btt])
+            highlight_color = mcolors.to_hex(VERMILION)
+            highlight_display = {display_name(m) for m in highlight}
+            for tick in ax.get_yticklabels():
                 if tick.get_text() in highlight_display:
                     tick.set_fontweight("bold")
                     tick.set_color(highlight_color)
-        style_axis(ax, ylim, yticks)
-        if col == 0:
-            ax.set_ylabel(ylabel, labelpad=4)
         else:
             ax.tick_params(axis="y", length=0)
 
-    fig.text(0.012, 0.985, panel_letter, ha="left", va="top",
+    fig.text(0.008, 0.985, panel_letter, ha="left", va="top",
              fontsize=10.5, fontweight="bold")
-    fig.suptitle(title, x=0.066, y=0.985, ha="left", va="top",
-                 fontsize=10.5, fontweight="bold")
+    fig.suptitle(title, x=0.052, y=0.985, ha="left", va="top",
+                 fontsize=10.0, fontweight="bold")
     fig.text(
-        0.081, 0.012,
-        f"Bars show median across {seed_note} seeds per method per dataset; error bars span Q1–Q3 (IQR). "
-        "Within each panel methods are ordered by median ascending; ties broken by Q1 ascending.",
-        ha="left", va="bottom", fontsize=5.5, color="#4D4D4D",
+        0.052, 0.015,
+        f"Dots indicate the median across {seed_note} independent seeds; "
+        "whiskers indicate Q1–Q3 (interquartile range). Methods share a fixed "
+        "order (mean rank across this group's datasets, best at top) in every "
+        "panel. Pairwise comparisons: Bonferroni-corrected Wilcoxon signed-rank test.",
+        ha="left", va="bottom", fontsize=5.6, color="#4D4D4D", wrap=True,
     )
-    fig.subplots_adjust(left=0.08, right=0.996, bottom=0.34, top=0.82, wspace=0.28)
+    fig.subplots_adjust(left=0.135, right=0.985, bottom=0.20, top=0.86, wspace=0.18)
 
-    for ext in ["png", "pdf"]:
-        fig.savefig(os.path.join(outdir, f"{output_prefix}.{ext}"),
-                    bbox_inches="tight", pad_inches=0.025)
+    save_figure(fig, outdir, output_prefix)
     plt.close(fig)
 
 
@@ -242,7 +218,7 @@ def main():
         metric_med="max_fitness_median", metric_q1="max_fitness_q1",
         metric_q3="max_fitness_q3",
         ylabel="Median max fitness",
-        title=f"Max fitness across {label_kind} — median ± Q1–Q3 IQR",
+        title=f"Maximum fitness across {label_kind} (median, Q1–Q3 whiskers)",
         output_prefix=cfg["max_prefix"], panel_letter="a",
         ylim=cfg["max_ylim"], yticks=cfg["max_yticks"], seed_note=seed_note,
     )
@@ -251,7 +227,7 @@ def main():
         metric_med="top128_median", metric_q1="top128_q1",
         metric_q3="top128_q3",
         ylabel="Median of top-128 mean fitness",
-        title=f"Top-128 mean fitness across {label_kind} — median ± Q1–Q3 IQR",
+        title=f"Top-128 mean fitness across {label_kind} (median, Q1–Q3 whiskers)",
         output_prefix=cfg["top_prefix"], panel_letter="a",
         ylim=cfg["top_ylim"], yticks=cfg["top_yticks"], seed_note=seed_note,
     )
