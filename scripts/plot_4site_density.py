@@ -70,7 +70,7 @@ def main():
             ax.set_ylabel("Variant count (log)", fontsize=XLABEL_FONTSIZE)
         ax.text(0.96, 0.94, f"N={len(fn):,}\nmedian={med:.3g}\np99={p99:.2f}\n"
                 f">0.5: {frac50*100:.2f}%", transform=ax.transAxes, va="top", ha="right",
-                fontsize=BASE_FONTSIZE)
+                ma="left", fontsize=BASE_FONTSIZE)
         prettify_ax(ax)
 
         # row 2: survival P(F > x), log y

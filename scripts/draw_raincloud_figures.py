@@ -206,14 +206,20 @@ TASKS = {
 }
 
 # Metric to rank/plot by. rank_col must exist in each task's source CSV.
+# fig_w_mm / fig_h_mm set the print size (max fitness stays compact; top-128
+# is drawn wider/taller for the supplementary layout).
 METRIC_CONFIG = {
     "max_fitness": {
         "rank_col": "max_fitness_median",
         "xlabel": "Median max fitness",
+        "fig_w_mm": 80,
+        "fig_h_mm": 40,
     },
     "top128": {
         "rank_col": "top128_median",
         "xlabel": "Top-128 fitness",
+        "fig_w_mm": 170,
+        "fig_h_mm": 45,
     },
 }
 
@@ -298,11 +304,12 @@ def plot_raincloud_figure(task, metric="max_fitness", outdir=None):
     dataset_order = cfg["dataset_order"]
     n_panels = len(dataset_order)
     MM_TO_IN = 1 / 25.4
-    FIG_HEIGHT_MM = 40
+    FIG_WIDTH_MM = metric_cfg["fig_w_mm"]
+    FIG_HEIGHT_MM = metric_cfg["fig_h_mm"]
     AXIS_BOTTOM, AXIS_TOP = 0.16, 0.90  # must match the subplots_adjust call below
     fig, axes = plt.subplots(
         1, n_panels,
-        figsize=(80 * MM_TO_IN, FIG_HEIGHT_MM * MM_TO_IN),
+        figsize=(FIG_WIDTH_MM * MM_TO_IN, FIG_HEIGHT_MM * MM_TO_IN),
         sharey=True,
     )
     axes = np.atleast_1d(axes)
