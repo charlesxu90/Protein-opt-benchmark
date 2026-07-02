@@ -250,10 +250,14 @@ median; ties assigned the average rank) and averaged within each regime.
 Each method × landscape combination was run for n = 30 independent random seeds (the
 first 30 entries of a fixed seed list). Distributions across seeds are heavy-tailed and
 multimodal; we therefore summarized each combination by its median and interquartile
-range (Q1–Q3) rather than the mean (Fig. 2c,d; Extended Data Fig. 2b, 3b). Pairwise
-differences between methods were assessed with two-sided Wilcoxon signed-rank tests on
-the paired per-seed values, with Bonferroni correction for multiple comparisons at
-α = 0.05 (Extended Data Fig. 3c). No data were excluded and seeds were fixed for
+range (Q1–Q3) rather than the mean. In all performance figures, dots indicate the
+median maximum fitness (or median top-128 mean fitness) across the n = 30 independent
+seeds; whiskers indicate Q1–Q3 (interquartile range). Methods are shown in a fixed order
+(by mean rank across the group's datasets, best at top) that is consistent across every
+panel. Pairwise differences between methods were assessed with two-sided Wilcoxon
+signed-rank tests on the paired per-seed values, with Bonferroni correction for multiple
+comparisons at α = 0.05 (Extended Data Fig. 3c). No data were excluded and seeds were
+fixed for
 reproducibility. Datasets are provided under `data/<name>/data.csv`, oracle checkpoints
 under `oracles/<dataset>/oracle.pt`, and per-seed results under each method's result
 tree. Comparison tables and figures are regenerated with

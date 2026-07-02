@@ -17,12 +17,19 @@ Source data: `figures/alphavariant_comparison_values.csv`.
 """
 import argparse
 import os
+import sys
 import numpy as np
 import pandas as pd
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-_DEFAULT_BASE = "/home/xux/Desktop/AlphaVariant/Benchmark/figures"
+_BENCH_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _BENCH_ROOT)
+
+from utils.plot_style_utils import (
+    COMPACT_6PT_RCPARAMS, apply_nature_rcparams, save_figure, style_axis_vbar,
+)
+
+_DEFAULT_BASE = os.path.join(_BENCH_ROOT, "figures")
 
 parser = argparse.ArgumentParser(description="Render the supplementary AlphaVariant ablation figure.")
 parser.add_argument("--csv", default=os.path.join(_DEFAULT_BASE, "alphavariant_comparison_values.csv"))
@@ -44,19 +51,7 @@ SHIPPED_DEFAULT = _args.shipped_default
 
 df = pd.read_csv(SRC)
 
-mpl.rcParams.update({
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-    "axes.linewidth": 0.65,
-    "axes.labelsize": 8.2,
-    "axes.titlesize": 8.8,
-    "xtick.labelsize": 6.6,
-    "ytick.labelsize": 6.8,
-    "figure.dpi": 180,
-    "savefig.dpi": 600,
-})
+apply_nature_rcparams(COMPACT_6PT_RCPARAMS)
 
 # Ablation bar order (left → right) — populated from CLI.
 _methods = [m.strip() for m in _args.bar_methods.split(",")]
@@ -104,20 +99,14 @@ def lighten(hex_color, amount=0.12):
 
 
 def style_axis(ax, ylim, yticks):
+    style_axis_vbar(ax)
     ax.set_ylim(*ylim)
     ax.set_yticks(yticks)
-    ax.yaxis.grid(True, color="#E6E6E6", linewidth=0.55, zorder=0)
-    ax.xaxis.grid(False)
-    ax.tick_params(axis="both", length=2.4, width=0.55, color="#333333", pad=2)
-    for spine in ["top", "right"]:
-        ax.spines[spine].set_visible(False)
-    for spine in ["left", "bottom"]:
-        ax.spines[spine].set_color("#333333")
-        ax.spines[spine].set_linewidth(0.6)
 
 
-def plot_ablation(metric, ylabel, title, output_prefix, panel_letter, ylim, yticks, std_col):
-    fig, axes = plt.subplots(1, 4, figsize=(7.25, 2.6), sharey=True)
+def plot_ablation(metric, ylabel, output_prefix, ylim, yticks, std_col):
+    MM_TO_IN = 1 / 25.4
+    fig, axes = plt.subplots(1, 4, figsize=(184 * MM_TO_IN, 66 * MM_TO_IN), sharey=True)
     fig.patch.set_facecolor("white")
 
     for col, (ax, dataset) in enumerate(zip(axes, dataset_order)):
@@ -157,17 +146,17 @@ def plot_ablation(metric, ylabel, title, output_prefix, panel_letter, ylim, ytic
         for bar, v, s, p in zip(bars, vals, stds, present):
             if p:
                 ax.text(bar.get_x() + bar.get_width() / 2, v + s + offset, f"{v:.3f}",
-                         ha="center", va="bottom", fontsize=5.5, rotation=90,
+                         ha="center", va="bottom", fontsize=6.0, rotation=90,
                          color="#303030", clip_on=False)
             else:
                 ax.text(bar.get_x() + bar.get_width() / 2, ylim[0] + offset, "NR",
-                         ha="center", va="bottom", fontsize=6.5, fontweight="bold",
+                         ha="center", va="bottom", fontsize=6.0, fontweight="bold",
                          color="#888888", clip_on=False)
 
-        ax.set_title(dataset_labels[dataset], pad=7, fontweight="bold")
+        ax.set_title(dataset_labels[dataset], pad=7, fontweight="bold", fontsize=6.0)
         ax.set_xticks(x)
         ax.set_xticklabels([lbl for _, lbl in ABLATION_ORDER], rotation=35, ha="right",
-                            rotation_mode="anchor")
+                            rotation_mode="anchor", fontsize=6.0)
         # Highlight the shipped-default bar on the x-axis (red, bold).
         for tick, (m, _) in zip(ax.get_xticklabels(), ABLATION_ORDER):
             if m == SHIPPED_DEFAULT:
@@ -175,35 +164,27 @@ def plot_ablation(metric, ylabel, title, output_prefix, panel_letter, ylim, ytic
                 tick.set_color("#8B1A1A")
         style_axis(ax, ylim, yticks)
         if col == 0:
-            ax.set_ylabel(ylabel, labelpad=4)
+            ax.set_ylabel(ylabel, labelpad=4, fontsize=6.0)
         else:
             ax.tick_params(axis="y", length=0)
 
-    fig.text(0.012, 0.985, panel_letter, ha="left", va="top",
-              fontsize=10.5, fontweight="bold")
-    fig.suptitle(title, x=0.066, y=0.985, ha="left", va="top",
-                  fontsize=10.5, fontweight="bold")
     fig.text(
         0.081, 0.012,
         "AlphaVariant extension ablation. Leftmost (red) bar is the shipped AlphaVariant base; "
         "remaining bars add one optional extension. NR = not evaluated. None of the extensions "
         "universally improves over the base at n=30 (paired Wilcoxon p > 0.10).",
-        ha="left", va="bottom", fontsize=5.5, color="#4D4D4D",
+        ha="left", va="bottom", fontsize=6.0, color="#4D4D4D",
     )
-    fig.subplots_adjust(left=0.08, right=0.996, bottom=0.34, top=0.82, wspace=0.28)
+    fig.subplots_adjust(left=0.08, right=0.996, bottom=0.34, top=0.92, wspace=0.28)
 
-    for ext in ["png", "pdf"]:
-        fig.savefig(os.path.join(OUTDIR, f"{output_prefix}.{ext}"),
-                     bbox_inches="tight", pad_inches=0.025)
+    save_figure(fig, OUTDIR, output_prefix)
     plt.close(fig)
 
 
 plot_ablation(
     metric="max_fitness",
     ylabel="Max fitness",
-    title="AlphaVariant extension ablation — max fitness",
     output_prefix="supp_figure_ablation_max_fitness",
-    panel_letter="a",
     ylim=(0.0, 1.1),
     yticks=np.arange(0.0, 1.01, 0.2),
     std_col="max_fitness_std",
@@ -212,9 +193,7 @@ plot_ablation(
 plot_ablation(
     metric="top128_mean_fitness",
     ylabel="Mean of top 128 fitness",
-    title="AlphaVariant extension ablation — top-128 mean fitness",
     output_prefix="supp_figure_ablation_top128_mean_fitness",
-    panel_letter="b",
     ylim=(0.0, 0.82),
     yticks=np.arange(0.0, 0.71, 0.1),
     std_col="top128_std",

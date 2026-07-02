@@ -72,6 +72,28 @@ COMPACT_6PT_RCPARAMS: dict = {
     "ytick.labelsize": 6.0,
 }
 
+# ---------------------------------------------------------------------------
+# Default figure font scheme (7pt panel titles + x-axis labels, 6pt for
+# everything else, no bold). Standing default for new print figures — pass to
+# apply_nature_rcparams(). axes.labelsize governs y-labels/tick labels here;
+# x-axis labels sit one point larger than that shared default, so call
+# ax.set_xlabel(..., fontsize=XLABEL_FONTSIZE) explicitly per-axis.
+# ---------------------------------------------------------------------------
+TITLE_FONTSIZE = 7.0
+XLABEL_FONTSIZE = 7.0
+BASE_FONTSIZE = 6.0
+
+DEFAULT_FIGURE_RCPARAMS: dict = {
+    "font.size": BASE_FONTSIZE,
+    "axes.titlesize": TITLE_FONTSIZE,
+    "axes.titleweight": "normal",
+    "axes.labelsize": BASE_FONTSIZE,
+    "axes.labelweight": "normal",
+    "xtick.labelsize": BASE_FONTSIZE,
+    "ytick.labelsize": BASE_FONTSIZE,
+    "font.weight": "normal",
+}
+
 
 def apply_nature_rcparams(overrides: dict | None = None) -> None:
     """Apply Nature-journal-style rcParams for publication-ready figures.

@@ -10,6 +10,9 @@ Each method row shows three layers:
   --task 4site     : 4-site benchmark (GB1, PhoQ, TrpB)  [default]
   --task multisite : multi-site oracle benchmark (AAV, CreiLOV, PAB1)
 
+  --metric max_fitness : per-seed best fitness found                [default]
+  --metric top128       : per-seed top-128 mean fitness
+
 Outputs: {outdir}/{prefix}.{png,pdf,svg}
 """
 import argparse
@@ -31,6 +34,7 @@ os.chdir(_BENCH_ROOT)
 
 from utils.plot_style_utils import (
     VERMILION, SECONDARY_GRAY,
+    BASE_FONTSIZE, DEFAULT_FIGURE_RCPARAMS, TITLE_FONTSIZE, XLABEL_FONTSIZE,
     apply_nature_rcparams, save_figure, style_axis_hbar,
 )
 
@@ -88,13 +92,27 @@ ARCH_OVERRIDE = {
 }
 
 
-def _load_4site_seeds(method, dataset, cap=30):
+# Per-seed metric key to read from the raw metrics.json, per task/metric.
+# 4-site "top128" is already normalized to [0,1] (no gmax division needed);
+# multisite oracle "top128" uses its own pre-normalized field.
+METRIC_KEY_4SITE = {
+    "max_fitness": "max_fitness",
+    "top128": "normalized_fitness_median_top128",
+}
+METRIC_KEY_ORACLE = {
+    "max_fitness": "max_fitness_norm",
+    "top128": "top128_mean_norm",
+}
+
+
+def _load_4site_seeds(method, dataset, metric="max_fitness", cap=30):
     arch = ARCH_OVERRIDE.get((method, dataset), DS_ARCH.get(dataset, dataset))
     pat = COMPETITOR_PATTERNS_4SITE.get(method)
     if pat is None:
         return []
     pattern = pat.format(a=arch, arch=arch)
     gmax = GMAX_4SITE.get(dataset, 1.0)
+    key = METRIC_KEY_4SITE[metric]
     vals = []
     for fp in sorted(glob.glob(pattern))[:cap]:
         try:
@@ -102,10 +120,10 @@ def _load_4site_seeds(method, dataset, cap=30):
             m = d.get("metrics") or d.get("final_metrics") or d
             if isinstance(m, list):
                 m = m[-1]
-            v = m.get("max_fitness")
+            v = m.get(key)
             if v is None:
                 continue
-            if v > 1.5 and gmax != 1.0:
+            if metric == "max_fitness" and v > 1.5 and gmax != 1.0:
                 v = v / gmax
             if 0.0 <= v <= 1.5:
                 vals.append(float(v))
@@ -114,13 +132,14 @@ def _load_4site_seeds(method, dataset, cap=30):
     return vals
 
 
-def _load_oracle_seeds(method, dataset, cap=30):
+def _load_oracle_seeds(method, dataset, metric="max_fitness", cap=30):
     pattern = f"results_oracle/{dataset}/{method}/seed*.json"
+    key = METRIC_KEY_ORACLE[metric]
     vals = []
     for fp in sorted(glob.glob(pattern))[:cap]:
         try:
             d = json.load(open(fp))
-            v = d.get("metrics", {}).get("max_fitness_norm")
+            v = d.get("metrics", {}).get(key)
             if v is not None and 0.0 <= v <= 1.5:
                 vals.append(float(v))
         except Exception:
@@ -128,10 +147,10 @@ def _load_oracle_seeds(method, dataset, cap=30):
     return vals
 
 
-def load_seed_values(method, dataset, task):
+def load_seed_values(method, dataset, task, metric="max_fitness"):
     if task == "4site":
-        return _load_4site_seeds(method, dataset)
-    return _load_oracle_seeds(method, dataset)
+        return _load_4site_seeds(method, dataset, metric=metric)
+    return _load_oracle_seeds(method, dataset, metric=metric)
 
 
 # ------------------------------------------------------------------
@@ -154,7 +173,10 @@ TASKS = {
         "highlight": {"AlphaVariant"},
         "xlim": (0.0, 1.05),
         "xticks": np.arange(0.0, 1.01, 0.2),
-        "prefix": "main_figure_max_fitness_raincloud",
+        "prefix": {
+            "max_fitness": "main_figure_max_fitness_raincloud",
+            "top128": "supplementary_figure_top128_mean_fitness_raincloud",
+        },
         "panel_letter": "c",
         "label_kind": "four-site datasets",
     },
@@ -174,9 +196,24 @@ TASKS = {
         "highlight": {"AlphaVariant"},
         "xlim": (0.0, 1.05),
         "xticks": np.arange(0.0, 1.01, 0.2),
-        "prefix": "main_figure_multisite_max_fitness_raincloud",
+        "prefix": {
+            "max_fitness": "main_figure_multisite_max_fitness_raincloud",
+            "top128": "supplementary_figure_multisite_top128_mean_fitness_raincloud",
+        },
         "panel_letter": "d",
         "label_kind": "multi-site datasets",
+    },
+}
+
+# Metric to rank/plot by. rank_col must exist in each task's source CSV.
+METRIC_CONFIG = {
+    "max_fitness": {
+        "rank_col": "max_fitness_median",
+        "xlabel": "Median max fitness",
+    },
+    "top128": {
+        "rank_col": "top128_median",
+        "xlabel": "Top-128 fitness",
     },
 }
 
@@ -231,28 +268,29 @@ def draw_raincloud_row(ax, values, y_center, color, bar_box_h, highlight=False,
                edgecolors="none", linewidths=0, zorder=6)
 
 
-def global_method_order(df, cfg):
+def global_method_order(df, cfg, rank_col="max_fitness_median"):
     """Fixed method order: best mean rank first, mean score breaks ties."""
     datasets = cfg["dataset_order"]
     main_methods = cfg["main_methods"]
     sub = df[(df["dataset"].isin(datasets)) & (df["method"].isin(main_methods))].copy()
-    sub["rank"] = sub.groupby("dataset")["max_fitness_median"].rank(
+    sub["rank"] = sub.groupby("dataset")[rank_col].rank(
         ascending=False, method="average")
     agg = sub.groupby("method").agg(
         mean_rank=("rank", "mean"),
-        mean_score=("max_fitness_median", "mean"),
+        mean_score=(rank_col, "mean"),
     )
     agg = agg.sort_values(["mean_rank", "mean_score"], ascending=[True, False])
     return agg.index.tolist()
 
 
-def plot_raincloud_figure(task, outdir=None):
+def plot_raincloud_figure(task, metric="max_fitness", outdir=None):
     cfg = TASKS[task]
+    metric_cfg = METRIC_CONFIG[metric]
     df = pd.read_csv(cfg["csv"])
     effective_outdir = outdir or cfg["outdir"]
 
     # Best method (AlphaVariant) at y=n-1 → top row; worst at y=0 → bottom row.
-    methods = global_method_order(df, cfg)[::-1]  # worst first (rank 1 = last index)
+    methods = global_method_order(df, cfg, rank_col=metric_cfg["rank_col"])[::-1]  # worst first (rank 1 = last index)
     n_methods = len(methods)
     ROW_STEP = 0.75
     y_centers = np.arange(n_methods, dtype=float) * ROW_STEP
@@ -282,7 +320,7 @@ def plot_raincloud_figure(task, outdir=None):
     for col, (ax, dataset) in enumerate(zip(axes, dataset_order)):
         np.random.seed(col)
         for row_i, method in enumerate(methods):
-            vals = load_seed_values(method, dataset, task)
+            vals = load_seed_values(method, dataset, task, metric=metric)
             if not vals:
                 continue
             draw_raincloud_row(ax, vals, y_centers[row_i],
@@ -292,16 +330,15 @@ def plot_raincloud_figure(task, outdir=None):
         style_axis_hbar(ax, cfg["xlim"], cfg["xticks"])
         ax.set_ylim(-0.30, (n_methods - 1) * ROW_STEP + 0.36)
         ax.set_yticks(y_centers)
-        ax.set_title(cfg["dataset_labels"][dataset], pad=4, fontweight="bold", fontsize=5.5)
-        ax.set_xlabel("Median max fitness", labelpad=3, fontsize=5.5)
+        ax.set_title(cfg["dataset_labels"][dataset], pad=4, fontsize=TITLE_FONTSIZE)
+        ax.set_xlabel(metric_cfg["xlabel"], labelpad=3, fontsize=XLABEL_FONTSIZE)
 
         if col == 0:
             ax.set_yticklabels(
-                [DISPLAY_NAMES.get(m, m) for m in methods], fontsize=5.5)
+                [DISPLAY_NAMES.get(m, m) for m in methods], fontsize=BASE_FONTSIZE)
             for tick in ax.get_yticklabels():
                 raw = raw_from_display.get(tick.get_text(), tick.get_text())
                 if raw in cfg["highlight"]:
-                    tick.set_fontweight("bold")
                     tick.set_color(mcolors.to_hex(VERMILION))
         else:
             ax.tick_params(axis="y", labelleft=False)
@@ -316,7 +353,7 @@ def plot_raincloud_figure(task, outdir=None):
     wspace = gap_mm / axis_width_mm
     fig.subplots_adjust(left=left, right=right, bottom=AXIS_BOTTOM, top=AXIS_TOP, wspace=wspace)
 
-    save_figure(fig, effective_outdir, cfg["prefix"])
+    save_figure(fig, effective_outdir, cfg["prefix"][metric])
     plt.close(fig)
 
 
@@ -325,22 +362,21 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--task", choices=["4site", "multisite"], default="4site",
                     help="which benchmark to draw (default: 4site)")
+    ap.add_argument("--metric", choices=list(METRIC_CONFIG), default="max_fitness",
+                    help="which metric to plot (default: max_fitness)")
     ap.add_argument("--outdir", default=None,
                     help="output directory (default: task-specific figures/ subdir)")
     args = ap.parse_args()
 
-    apply_nature_rcparams({
-        "axes.labelsize": 5.5, "axes.titlesize": 5.5,
-        "xtick.labelsize": 5.5, "ytick.labelsize": 5.5,
-    })
+    apply_nature_rcparams(DEFAULT_FIGURE_RCPARAMS)
     np.random.seed(0)
 
     csv_path = TASKS[args.task]["csv"]
     if not os.path.exists(csv_path):
         sys.exit(f"Source CSV not found: {csv_path}")
 
-    plot_raincloud_figure(args.task, outdir=args.outdir)
-    print(f"Raincloud figure ({args.task}) complete.")
+    plot_raincloud_figure(args.task, metric=args.metric, outdir=args.outdir)
+    print(f"Raincloud figure ({args.task}, {args.metric}) complete.")
 
 
 if __name__ == "__main__":
