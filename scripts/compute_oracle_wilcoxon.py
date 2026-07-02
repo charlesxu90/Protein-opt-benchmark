@@ -25,6 +25,7 @@ import argparse
 import glob
 import json
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -34,12 +35,23 @@ import matplotlib.pyplot as plt
 from scipy.stats import wilcoxon
 
 BENCH = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, BENCH)
+
+from utils.plot_style_utils import (
+    BASE_FONTSIZE, DEFAULT_FIGURE_RCPARAMS, TITLE_FONTSIZE, XLABEL_FONTSIZE,
+    apply_nature_rcparams, save_figure,
+)
+
 OUT = os.path.join(BENCH, "figures", "ms_oracles")
-DATASETS = ["ms_AAV", "ms_CreiLOV", "ms_GFP", "ms_PAB1"]
+DATASETS = ["ms_AAV", "ms_CreiLOV", "ms_PAB1"]
+LABELS = {"ms_AAV": "AAV", "ms_CreiLOV": "CreiLOV", "ms_PAB1": "PAB1"}
 METHODS = ["Random", "GreedyWalk", "ALDE", "CLADE", "ftMLDE",
            "AdaLead", "MULTIevolve", "AiCE", "EVOLVEpro", "AlphaVariant"]
 METRICS = [("max_fitness_norm", "max fitness"),
            ("top128_mean_norm", "top-128 mean")]
+# Only this metric's dominance heatmap is drawn; the other metric still feeds
+# the pairwise/vs-best CSVs and the markdown summary.
+HEATMAP_METRIC = "top128_mean_norm"
 ALPHA = 0.05
 
 
@@ -79,6 +91,8 @@ def main():
                     help="subset of datasets to test (default: all four)")
     DATASETS = ap.parse_args().datasets
     os.makedirs(OUT, exist_ok=True)
+    apply_nature_rcparams(DEFAULT_FIGURE_RCPARAMS)
+    MM_TO_IN = 1 / 25.4
     n_pairs = len(METHODS) * (len(METHODS) - 1) // 2
     alpha_pair = ALPHA / n_pairs            # Bonferroni, full pairwise
     alpha_vsbest = ALPHA / (len(METHODS) - 1)  # Bonferroni, vs-best
@@ -89,9 +103,12 @@ def main():
     vsbest_rows = []
     for key, label in METRICS:
         pair_rows = []
-        present = [m for m in METHODS]  # all present (30 seeds each)
-        fig, axes = plt.subplots(1, len(DATASETS), figsize=(3.75 * len(DATASETS), 4.2))
-        axes = np.atleast_1d(axes)
+        draw = (key == HEATMAP_METRIC)
+        if draw:
+            fig, axes = plt.subplots(
+                1, len(DATASETS),
+                figsize=(170 * MM_TO_IN, 62 * MM_TO_IN))
+            axes = np.atleast_1d(axes)
         for c, ds in enumerate(DATASETS):
             data = load(ds, key)
             order = sorted(data, key=lambda m: np.median(list(data[m].values())), reverse=True)
@@ -125,6 +142,8 @@ def main():
                     "median_diff": float(np.median(x) - np.median(y)),
                     "p_greater": p, "sig_bonferroni": p < alpha_vsbest})
 
+            if not draw:
+                continue
             # heatmap: -log10(one-sided p, row>col), star if Bonferroni-sig
             ax = axes[c]
             with np.errstate(divide="ignore"):
@@ -132,20 +151,20 @@ def main():
             np.fill_diagonal(M, np.nan)
             im = ax.imshow(M, cmap="viridis", vmin=0, vmax=6)
             ax.set_xticks(range(k)); ax.set_yticks(range(k))
-            ax.set_xticklabels(order, rotation=60, ha="right", fontsize=6)
-            ax.set_yticklabels(order, fontsize=6)
-            ax.set_title(ds, fontsize=10, fontweight="bold")
+            ax.set_xticklabels(order, rotation=60, ha="right", fontsize=BASE_FONTSIZE)
+            ax.set_yticklabels(order, fontsize=BASE_FONTSIZE)
+            ax.set_title(LABELS.get(ds, ds), fontsize=TITLE_FONTSIZE)
             for i in range(k):
                 for j in range(k):
                     if i != j and P[i, j] < alpha_pair:
-                        ax.text(j, i, "*", ha="center", va="center", color="w", fontsize=8)
-        fig.suptitle(f"Pairwise dominance — {label}: -log10 p(row > col), paired "
-                     f"Wilcoxon; * = Bonferroni-significant (α={alpha_pair:.1e})",
-                     fontsize=11, fontweight="bold")
-        fig.colorbar(im, ax=axes, fraction=0.012, pad=0.01, label="-log10 p")
-        for ext in ("png", "pdf"):
-            fig.savefig(os.path.join(OUT, f"wilcoxon_heatmap_{key}.{ext}"), bbox_inches="tight")
-        plt.close(fig)
+                        ax.text(j, i, "*", ha="center", va="center", color="w",
+                                fontsize=BASE_FONTSIZE)
+        if draw:
+            cbar = fig.colorbar(im, ax=axes, fraction=0.012, pad=0.01)
+            cbar.set_label("-log10 p", fontsize=XLABEL_FONTSIZE)
+            cbar.ax.tick_params(labelsize=BASE_FONTSIZE)
+            save_figure(fig, OUT, f"wilcoxon_heatmap_{key}")
+            plt.close(fig)
         pd.DataFrame(pair_rows).to_csv(
             os.path.join(OUT, f"wilcoxon_pairwise_{key}.csv"), index=False)
 

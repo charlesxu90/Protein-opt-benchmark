@@ -12,7 +12,7 @@ For each multi-site dataset, produces two diagnostics:
           distribution and per-position observed alphabet, so the comparison stays
           inside the realistic design space (not wild extrapolation).
 
-Output: figures/ms_oracles/oracle_diagnostics.{png,pdf}
+Output: figures/ms_oracles/oracle_diagnostics.{png,pdf,svg}
 
 Usage:
     python scripts/plot_oracle_diagnostics.py --device cuda:0
@@ -35,8 +35,16 @@ from sklearn.metrics import r2_score
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from utils.oracle_model import BaseCNN, encode_int, N_TOKENS
+from utils.plot_style_utils import (
+    BASE_FONTSIZE, DEFAULT_FIGURE_RCPARAMS, TITLE_FONTSIZE, XLABEL_FONTSIZE,
+    apply_nature_rcparams, prettify_ax, save_figure,
+)
 
-DATASETS = ["ms_AAV", "ms_CreiLOV", "ms_GFP", "ms_PAB1"]
+MEASURED_COLOR = "#2c7fb8"
+NOVEL_COLOR = "#de2d26"
+MM_TO_IN = 1 / 25.4
+
+DATASETS = ["ms_AAV", "ms_CreiLOV", "ms_PAB1"]
 TEST_SPLIT = 0.1
 TRAIN_SEED = 420          # must match train_oracle.py
 MAX_CMP = 10000           # cap per group for the distribution panel
@@ -133,7 +141,9 @@ def main():
         args.device = "cpu"
     os.makedirs(args.out_dir, exist_ok=True)
 
-    fig, axes = plt.subplots(2, len(DATASETS), figsize=(4.2 * len(DATASETS), 8.0))
+    apply_nature_rcparams(DEFAULT_FIGURE_RCPARAMS)
+    fig, axes = plt.subplots(2, len(DATASETS),
+                             figsize=(170 * MM_TO_IN, 90 * MM_TO_IN))
     summary = []
 
     for c, dataset in enumerate(DATASETS):
@@ -155,46 +165,61 @@ def main():
         r2 = r2_score(true_raw, pred_raw)
         summary.append((dataset, rmse_raw, rmse_norm, rho, r2, len(test_idx)))
 
+        # Normalize to [0,1] using the original dataset's fitness range so every
+        # panel shares a 0-1 scale (this is the same min-max the oracle was fit
+        # with; see train_oracle.py).
+        data_min, data_max = float(fitness.min()), float(fitness.max())
+        data_range = data_max - data_min + 1e-12
+        true_n = (true_raw - data_min) / data_range
+        pred_n = (pred_raw - data_min) / data_range
+
         ax = axes[0, c]
-        ax.hexbin(true_raw, pred_raw, gridsize=45, cmap="viridis", bins="log", mincnt=1)
-        lo = min(true_raw.min(), pred_raw.min())
-        hi = max(true_raw.max(), pred_raw.max())
-        ax.plot([lo, hi], [lo, hi], "r--", lw=1.2, alpha=0.8)
-        ax.set_xlabel("True fitness"); ax.set_ylabel("Oracle prediction")
-        ax.set_title(f"{dataset}  (n={len(test_idx)})", fontsize=11, fontweight="bold")
+        ax.hexbin(true_n, pred_n, gridsize=45, cmap="viridis", bins="log", mincnt=1)
+        lo = min(true_n.min(), pred_n.min())
+        hi = max(true_n.max(), pred_n.max())
+        ax.plot([lo, hi], [lo, hi], "r--", lw=0.8, alpha=0.8)
+        ax.set_xlabel("True fitness", fontsize=XLABEL_FONTSIZE)
+        if c == 0:
+            ax.set_ylabel("Oracle prediction", fontsize=XLABEL_FONTSIZE)
+        ax.set_title(f"{dataset.replace('ms_', '')}  (n={len(test_idx)})",
+                     fontsize=TITLE_FONTSIZE)
         ax.text(0.04, 0.96,
                 f"RMSE={rmse_raw:.3g}\n(norm {rmse_norm:.3f})\n$\\rho$={rho:.3f}  $R^2$={r2:.3f}",
-                transform=ax.transAxes, va="top", ha="left", fontsize=9,
-                bbox=dict(boxstyle="round", fc="white", alpha=0.8))
+                transform=ax.transAxes, va="top", ha="left", ma="left",
+                fontsize=BASE_FONTSIZE)
+        prettify_ax(ax)
 
         # ---- measured vs novel (equal N) oracle-score distribution ----
         rng = np.random.RandomState(SAMPLE_SEED)
         n_cmp = min(len(test_idx), MAX_CMP)
-        meas_scores = pred_raw[rng.choice(len(pred_raw), n_cmp, replace=False)] \
-            if len(pred_raw) > n_cmp else pred_raw
+        meas_n = pred_n[rng.choice(len(pred_n), n_cmp, replace=False)] \
+            if len(pred_n) > n_cmp else pred_n
         novel = sample_novel(seqs, nmuts, wt, seq_len, n_cmp, rng)
         novel_raw = predict(model, novel, seq_len, args.device) * scale + fmin
+        novel_n = (novel_raw - data_min) / data_range
 
         ax2 = axes[1, c]
-        bins = np.linspace(min(meas_scores.min(), novel_raw.min()),
-                           max(meas_scores.max(), novel_raw.max()), 50)
-        ax2.hist(meas_scores, bins=bins, alpha=0.6, density=True,
-                 label=f"measured test (n={len(meas_scores)})", color="#2c7fb8")
-        ax2.hist(novel_raw, bins=bins, alpha=0.6, density=True,
-                 label=f"novel unmeasured (n={len(novel_raw)})", color="#de2d26")
-        ax2.set_xlabel("Oracle score (fitness units)"); ax2.set_ylabel("density")
-        ax2.legend(fontsize=8, loc="upper right")
-        ax2.set_title(f"measured vs novel  (med {np.median(meas_scores):.3g} / "
-                      f"{np.median(novel_raw):.3g})", fontsize=10)
+        bins = np.linspace(min(meas_n.min(), novel_n.min()),
+                           max(meas_n.max(), novel_n.max()), 50)
+        ax2.hist(meas_n, bins=bins, alpha=0.6, density=True,
+                 label=f"Measured test (n={len(meas_n)})", color=MEASURED_COLOR)
+        ax2.hist(novel_n, bins=bins, alpha=0.6, density=True,
+                 label=f"Novel unmeasured (n={len(novel_n)})", color=NOVEL_COLOR)
+        ax2.set_xlabel("Oracle score (normalized fitness)", fontsize=XLABEL_FONTSIZE)
+        if c == 0:
+            ax2.set_ylabel("Density", fontsize=XLABEL_FONTSIZE)
+        ax2.set_title(f"Measured vs novel  (med {np.median(meas_n):.3g} / "
+                      f"{np.median(novel_n):.3g})", fontsize=TITLE_FONTSIZE)
+        prettify_ax(ax2)
 
-    fig.suptitle("ms_* learned-oracle diagnostics: calibration (top) and "
-                 "measured vs novel score distributions (bottom)",
-                 fontsize=13, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
-    for ext in ("png", "pdf"):
-        path = os.path.join(args.out_dir, f"oracle_diagnostics.{ext}")
-        fig.savefig(path, dpi=150, bbox_inches="tight")
-        print(f"saved {path}")
+    # One shared legend for the measured/novel histograms, placed above the
+    # figure (up and outside the panels) so it never overlaps the bars.
+    handles, labels = axes[1, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False,
+               bbox_to_anchor=(0.5, 1.02), fontsize=BASE_FONTSIZE)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    save_figure(fig, args.out_dir, "oracle_diagnostics")
 
     print("\n=== oracle test-set summary ===")
     print(f"{'dataset':12s} {'RMSE(raw)':>10s} {'RMSE(norm)':>11s} {'spearman':>9s} {'R2':>7s} {'n_test':>7s}")
