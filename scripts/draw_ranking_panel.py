@@ -30,6 +30,7 @@ import matplotlib.pyplot as plt
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_FIGDIR = os.path.join(ROOT, "figures")
+MM_TO_IN = 1 / 25.4
 
 # --- palette -----------------------------------------------------------------
 # AlphaVariant colour unified with the performance figures (vermilion). Per-
@@ -73,7 +74,7 @@ GROUPS = {
             "4site_TRPB": "TrpB",
         },
     },
-    "Multi-site": {
+    "Multisite": {
         "csv": os.path.join(DEFAULT_FIGDIR, "ms_oracles", "multisite_oracle_median_iqr.csv"),
         "allow": MAIN_METHODS_MULTISITE,
         "dataset_labels": {
@@ -83,14 +84,15 @@ GROUPS = {
     },
 }
 
-apply_nature_rcparams({"font.size": 7.5})
+apply_nature_rcparams()
 
 
 def build_rank_table(group_cfg: dict, metric_col: str) -> pd.DataFrame:
     """Rank methods within each dataset of a group by ``metric_col`` (desc).
 
-    Returns a method x dataset table of ranks plus a 'Mean rank' column,
-    sorted best-to-worst. Rank 1 = best median; ties share the average rank.
+    Returns a method x dataset table of ranks plus 'Mean rank' and 'Mean score'
+    columns, sorted best-to-worst by mean rank, with mean score (higher = better)
+    breaking ties. Rank 1 = best median; ties share the average rank.
     """
     df = pd.read_csv(group_cfg["csv"])
     df = df[df["method"].isin(group_cfg["allow"])].copy()
@@ -107,7 +109,12 @@ def build_rank_table(group_cfg: dict, metric_col: str) -> pd.DataFrame:
     # keep dataset columns in declared order
     table = table[[d for d in datasets if d in table.columns]]
     table["Mean rank"] = table.mean(axis=1, skipna=True)
-    table = table.sort_values("Mean rank", ascending=True, na_position="last")
+    # mean metric score across datasets (higher = better) — the tiebreaker.
+    table["Mean score"] = df.groupby("method")[metric_col].mean().reindex(table.index)
+    # primary key: mean rank ascending (lower = better);
+    # tiebreaker: mean score descending (higher = better).
+    table = table.sort_values(["Mean rank", "Mean score"], ascending=[True, False],
+                              na_position="last")
     return table
 
 
@@ -115,32 +122,32 @@ def _draw_group(ax, table: pd.DataFrame, title: str, n_methods: int) -> None:
     # reverse so the best mean rank sits at the top
     methods = table.index.tolist()[::-1]
     tp = table.loc[methods]
-    dataset_cols = [c for c in tp.columns if c != "Mean rank"]
+    dataset_cols = [c for c in tp.columns if c not in ("Mean rank", "Mean score")]
     y = np.arange(len(tp))
     mean_rank = tp["Mean rank"].to_numpy(float)
 
     worst = n_methods  # stem origin = worst possible rank
-    ax.hlines(y, worst, mean_rank, color=LINE_GRAY, lw=1.05, zorder=1)
+    ax.hlines(y, worst, mean_rank, color=LINE_GRAY, lw=0.8, zorder=1)
 
     # individual dataset ranks: deliberately gray, jittered vertically
     offsets = np.linspace(-0.20, 0.20, len(dataset_cols))
     for di, ds in enumerate(dataset_cols):
         vals = tp[ds].to_numpy(float)
         mask = ~np.isnan(vals)
-        ax.scatter(vals[mask], y[mask] + offsets[di], s=14,
+        ax.scatter(vals[mask], y[mask] + offsets[di], s=10,
                    facecolor=DOT_GRAY, edgecolor=DOT_GRAY_EDGE,
                    linewidth=0.25, alpha=0.85, zorder=2)
 
     # mean rank: open circles, AlphaVariant as red filled
     is_alpha = np.array([m == "AlphaVariant" for m in tp.index])
-    ax.scatter(mean_rank[~is_alpha], y[~is_alpha], s=46, facecolor="white",
-               edgecolor="#202020", linewidth=1.05, zorder=4)
-    ax.scatter(mean_rank[is_alpha], y[is_alpha], s=58, facecolor=ALPHA_RED,
-               edgecolor="white", linewidth=0.75, zorder=5)
+    ax.scatter(mean_rank[~is_alpha], y[~is_alpha], s=30, facecolor="white",
+               edgecolor="#202020", linewidth=0.7, zorder=4)
+    ax.scatter(mean_rank[is_alpha], y[is_alpha], s=38, facecolor=ALPHA_RED,
+               edgecolor="white", linewidth=0.6, zorder=5)
 
-    ax.set_title(title, loc="left", fontsize=9.2, weight="bold", pad=8)
+    ax.set_title(title, loc="left", fontsize=7, fontweight="normal", pad=5)
     ax.set_yticks(y)
-    ax.set_yticklabels(tp.index, fontsize=7.1)
+    ax.set_yticklabels(tp.index, fontsize=6)
     for lab in ax.get_yticklabels():
         if lab.get_text() == "AlphaVariant":
             lab.set_color(ALPHA_RED)
@@ -149,18 +156,19 @@ def _draw_group(ax, table: pd.DataFrame, title: str, n_methods: int) -> None:
     ax.set_xlim(0.55, worst + 0.4)  # Rank 1 (best) on the left
     ticks = sorted({1, 2, 4, 6, 8, worst})
     ax.set_xticks([t for t in ticks if t <= worst])
-    ax.set_xlabel("Mean rank (1 = best)", fontsize=7.2, labelpad=14)
-    ax.grid(axis="x", color=GRID_GRAY, lw=0.6)
+    ax.set_xlabel("Mean rank (1 = best)", fontsize=7, fontweight="normal", labelpad=8)
+    ax.grid(axis="x", color=GRID_GRAY, lw=0.5)
     ax.set_axisbelow(True)
-    ax.spines[["top", "right", "left"]].set_visible(False)
-    ax.spines["bottom"].set_linewidth(0.65)
-    ax.tick_params(axis="y", length=0, pad=3)
-    ax.tick_params(axis="x", labelsize=7.0, length=3.0, pad=2)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.spines["left"].set_linewidth(0.25)
+    ax.spines["bottom"].set_linewidth(0.25)
+    ax.tick_params(axis="y", labelsize=6, length=2.4, width=0.25, pad=2)
+    ax.tick_params(axis="x", labelsize=6, length=2.4, width=0.25, pad=2)
 
     # directional indicator: best rank sits on the left
-    ax.annotate("better", xy=(0.0, -0.155), xytext=(0.30, -0.155),
+    ax.annotate("better", xy=(0.0, -0.185), xytext=(0.30, -0.185),
                 xycoords="axes fraction", textcoords="axes fraction",
-                fontsize=6.6, color=TEXT_GRAY, va="center", ha="left",
+                fontsize=6, color=TEXT_GRAY, va="center", ha="left",
                 arrowprops=dict(arrowstyle="->", color=TEXT_GRAY, lw=0.8))
 
 
@@ -169,34 +177,28 @@ def draw_panel(tables: Dict[str, pd.DataFrame], metric_label: str,
     import matplotlib.lines as mlines
     import matplotlib.patches as mpatches
 
-    fig = plt.figure(figsize=(5.6, 3.55), dpi=600)
-    gs = fig.add_gridspec(1, 2, left=0.135, right=0.985,
-                          bottom=0.30, top=0.80, wspace=0.55)
+    fig = plt.figure(figsize=(100 * MM_TO_IN, 45 * MM_TO_IN), dpi=600)
+    gs = fig.add_gridspec(1, 2, left=0.14, right=0.985,
+                          bottom=0.30, top=0.86, wspace=0.55)
     for gi, (group, table) in enumerate(tables.items()):
         ax = fig.add_subplot(gs[0, gi])
-        _draw_group(ax, table, f"{group} rankings", len(table))
-
-    fig.text(0.045, 0.945, "Average method ranking across datasets",
-             fontsize=10.6, fontweight="bold")
-    fig.text(0.045, 0.875,
-             f"Ranked by {metric_label} (median across {n_seeds} independent seeds per method per dataset)",
-             fontsize=7.0, color=TEXT_GRAY)
+        _draw_group(ax, table, f"{group}", len(table))
 
     # Keyed legend with explicit symbol descriptions
     legend_handles = [
-        mlines.Line2D([0], [0], marker="o", color="none", markersize=5.5,
+        mlines.Line2D([0], [0], marker="o", color="none", markersize=4,
                       markerfacecolor=DOT_GRAY, markeredgecolor=DOT_GRAY_EDGE,
                       markeredgewidth=0.4, label="Rank in one dataset"),
-        mlines.Line2D([0], [0], marker="o", color="none", markersize=7,
+        mlines.Line2D([0], [0], marker="o", color="none", markersize=5,
                       markerfacecolor="white", markeredgecolor="#202020",
-                      markeredgewidth=1.1, label="Mean rank across datasets"),
-        mlines.Line2D([0], [0], marker="o", color="none", markersize=7.5,
+                      markeredgewidth=0.7, label="Mean rank across datasets"),
+        mlines.Line2D([0], [0], marker="o", color="none", markersize=5.5,
                       markerfacecolor=ALPHA_RED, markeredgecolor="white",
-                      markeredgewidth=0.75, label="AlphaVariant mean rank"),
+                      markeredgewidth=0.6, label="AlphaVariant mean rank"),
     ]
     fig.legend(handles=legend_handles, loc="lower center",
-               bbox_to_anchor=(0.56, 0.00), ncol=3, frameon=False,
-               fontsize=6.0, handletextpad=0.4, columnspacing=1.0)
+               bbox_to_anchor=(0.56, -0.02), ncol=3, frameon=False,
+               fontsize=6, handletextpad=0.4, columnspacing=1.0)
 
     paths = save_figure(fig, outdir, prefix)
     plt.close(fig)

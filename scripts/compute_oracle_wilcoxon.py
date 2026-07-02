@@ -84,6 +84,22 @@ def wtest(x, y, alternative):
         return 1.0
 
 
+def global_heatmap_order(datasets, metric):
+    """Single method order shared by every heatmap panel, so the y-tick labels
+    are identical across panels and only need to be drawn once (on the left).
+
+    Methods are ranked by their mean per-dataset median (best first), matching
+    the "best at top" convention of the other figures.
+    """
+    medians = {}
+    for ds in datasets:
+        data = load(ds, metric)
+        for m, d in data.items():
+            medians.setdefault(m, []).append(float(np.median(list(d.values()))))
+    avg = {m: float(np.mean(v)) for m, v in medians.items() if v}
+    return sorted(avg, key=lambda m: avg[m], reverse=True)
+
+
 def main():
     global DATASETS
     ap = argparse.ArgumentParser(description=__doc__)
@@ -105,9 +121,10 @@ def main():
         pair_rows = []
         draw = (key == HEATMAP_METRIC)
         if draw:
+            heat_order = global_heatmap_order(DATASETS, key)
             fig, axes = plt.subplots(
                 1, len(DATASETS),
-                figsize=(170 * MM_TO_IN, 62 * MM_TO_IN))
+                figsize=(170 * MM_TO_IN, 45 * MM_TO_IN))
             axes = np.atleast_1d(axes)
         for c, ds in enumerate(DATASETS):
             data = load(ds, key)
@@ -144,23 +161,36 @@ def main():
 
             if not draw:
                 continue
-            # heatmap: -log10(one-sided p, row>col), star if Bonferroni-sig
+            # heatmap: -log10(one-sided p, row>col), star if Bonferroni-sig.
+            # Remap the per-dataset-ordered P matrix into the shared global order
+            # so every panel uses identical row/column method positions.
+            present = [m for m in heat_order if m in data]
+            pos = {m: i for i, m in enumerate(order)}
+            perm = [pos[m] for m in present]
+            Pg = P[np.ix_(perm, perm)]
+            kk = len(present)
+
             ax = axes[c]
             with np.errstate(divide="ignore"):
-                M = -np.log10(np.clip(P, 1e-300, 1))
+                M = -np.log10(np.clip(Pg, 1e-300, 1))
             np.fill_diagonal(M, np.nan)
-            im = ax.imshow(M, cmap="viridis", vmin=0, vmax=6)
-            ax.set_xticks(range(k)); ax.set_yticks(range(k))
-            ax.set_xticklabels(order, rotation=60, ha="right", fontsize=BASE_FONTSIZE)
-            ax.set_yticklabels(order, fontsize=BASE_FONTSIZE)
+            im = ax.imshow(M, cmap="viridis", vmin=0, vmax=6, aspect="auto")
+            ax.set_xticks(range(kk))
+            ax.set_yticks(range(kk))
+            ax.set_xticklabels(present, rotation=60, ha="right", fontsize=BASE_FONTSIZE)
+            # Unified y-tick labels: draw method names only on the leftmost panel.
+            ax.set_yticklabels(present if c == 0 else [], fontsize=BASE_FONTSIZE)
+            ax.tick_params(axis="both", labelsize=BASE_FONTSIZE)
             ax.set_title(LABELS.get(ds, ds), fontsize=TITLE_FONTSIZE)
-            for i in range(k):
-                for j in range(k):
-                    if i != j and P[i, j] < alpha_pair:
+            for i in range(kk):
+                for j in range(kk):
+                    if i != j and Pg[i, j] < alpha_pair:
                         ax.text(j, i, "*", ha="center", va="center", color="w",
                                 fontsize=BASE_FONTSIZE)
         if draw:
-            cbar = fig.colorbar(im, ax=axes, fraction=0.012, pad=0.01)
+            # Shared y-tick labels let the panels sit close together.
+            fig.subplots_adjust(wspace=0.12)
+            cbar = fig.colorbar(im, ax=axes, fraction=0.015, pad=0.02)
             cbar.set_label("-log10 p", fontsize=XLABEL_FONTSIZE)
             cbar.ax.tick_params(labelsize=BASE_FONTSIZE)
             save_figure(fig, OUT, f"wilcoxon_heatmap_{key}")
