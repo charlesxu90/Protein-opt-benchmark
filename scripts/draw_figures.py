@@ -1,17 +1,25 @@
 import argparse
 import os
+import sys
+
 import numpy as np
 import pandas as pd
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-_DEFAULT_BASE = "/home/xux/Desktop/AlphaVariant/Benchmark/figures"
+_BENCH_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _BENCH_ROOT)
+
+from utils.plot_style_utils import (
+    COMPACT_6PT_RCPARAMS, apply_nature_rcparams, save_figure, style_axis_vbar,
+)
+
+_DEFAULT_BASE = os.path.join(_BENCH_ROOT, "figures")
 
 parser = argparse.ArgumentParser(description="Render main + supplementary AlphaVariant comparison figures.")
 parser.add_argument("--csv", default=os.path.join(_DEFAULT_BASE, "alphavariant_comparison_values.csv"),
                     help="Source comparison-values CSV.")
 parser.add_argument("--outdir", default=_DEFAULT_BASE,
-                    help="Directory where the rendered figures (PNG+PDF) will be written.")
+                    help="Directory where the rendered figures (PNG+PDF+SVG) will be written.")
 _args = parser.parse_args()
 
 OUTDIR = _args.outdir
@@ -30,19 +38,7 @@ _mirror_path = os.path.join(OUTDIR, "alphavariant_comparison_values.csv")
 if os.path.abspath(_mirror_path) != os.path.abspath(source_csv):
     df.to_csv(_mirror_path, index=False)
 
-mpl.rcParams.update({
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-    "axes.linewidth": 0.65,
-    "axes.labelsize": 8.2,
-    "axes.titlesize": 8.8,
-    "xtick.labelsize": 6.1,
-    "ytick.labelsize": 6.8,
-    "figure.dpi": 180,
-    "savefig.dpi": 600,
-})
+apply_nature_rcparams(COMPACT_6PT_RCPARAMS)
 
 colors = {
     "AlphaVariant": "#8B1A1A",
@@ -79,20 +75,14 @@ def lighten(hex_color, amount=0.12):
 
 
 def style_axis(ax, ylim, yticks):
+    style_axis_vbar(ax)
     ax.set_ylim(*ylim)
     ax.set_yticks(yticks)
-    ax.yaxis.grid(True, color="#E6E6E6", linewidth=0.55, zorder=0)
-    ax.xaxis.grid(False)
-    ax.tick_params(axis="both", length=2.4, width=0.55, color="#333333", pad=2)
-    for spine in ["top", "right"]:
-        ax.spines[spine].set_visible(False)
-    for spine in ["left", "bottom"]:
-        ax.spines[spine].set_color("#333333")
-        ax.spines[spine].set_linewidth(0.6)
 
 
-def plot_metric_figure(metric, ylabel, title, output_prefix, panel_letter, ylim, yticks, std_col):
-    fig, axes = plt.subplots(1, 4, figsize=(7.25, 2.72), sharey=True)
+def plot_metric_figure(metric, ylabel, output_prefix, ylim, yticks, std_col):
+    MM_TO_IN = 1 / 25.4
+    fig, axes = plt.subplots(1, 4, figsize=(184 * MM_TO_IN, 69 * MM_TO_IN), sharey=True)
     fig.patch.set_facecolor("white")
 
     for col, (ax, dataset) in enumerate(zip(axes, dataset_order)):
@@ -118,46 +108,41 @@ def plot_metric_figure(metric, ylabel, title, output_prefix, panel_letter, ylim,
         offset = (ylim[1] - ylim[0]) * 0.018
         for bar, val, sd in zip(bars, vals, stds):
             ax.text(bar.get_x() + bar.get_width() / 2, val + sd + offset, f"{val:.3f}",
-                    ha="center", va="bottom", fontsize=5.0, rotation=90,
+                    ha="center", va="bottom", fontsize=6.0, rotation=90,
                     color="#303030", clip_on=False)
 
-        ax.set_title(dataset_labels[dataset], pad=7, fontweight="bold")
+        ax.set_title(dataset_labels[dataset], pad=7, fontweight="bold", fontsize=6.0)
         ax.set_xticks(x)
-        ax.set_xticklabels(methods, rotation=60, ha="right", rotation_mode="anchor")
+        ax.set_xticklabels(methods, rotation=60, ha="right", rotation_mode="anchor", fontsize=6.0)
         for tick in ax.get_xticklabels():
             if tick.get_text() in HIGHLIGHT_METHODS:
                 tick.set_fontweight("bold")
                 tick.set_color("#8B1A1A")
         style_axis(ax, ylim, yticks)
         if col == 0:
-            ax.set_ylabel(ylabel, labelpad=4)
+            ax.set_ylabel(ylabel, labelpad=4, fontsize=6.0)
         else:
             ax.tick_params(axis="y", length=0)
 
-    fig.text(0.012, 0.985, panel_letter, ha="left", va="top", fontsize=10.5, fontweight="bold")
-    fig.suptitle(title, x=0.066, y=0.985, ha="left", va="top", fontsize=10.5, fontweight="bold")
     fig.text(
         0.081,
         0.012,
         "Within each dataset, methods are ordered from lowest to highest mean value; open circle marks the best method.",
         ha="left",
         va="bottom",
-        fontsize=5.5,
+        fontsize=6.0,
         color="#4D4D4D",
     )
-    fig.subplots_adjust(left=0.08, right=0.996, bottom=0.34, top=0.82, wspace=0.28)
+    fig.subplots_adjust(left=0.08, right=0.996, bottom=0.34, top=0.92, wspace=0.28)
 
-    for ext in ["png", "pdf"]:
-        fig.savefig(os.path.join(OUTDIR, f"{output_prefix}.{ext}"), bbox_inches="tight", pad_inches=0.025)
+    save_figure(fig, OUTDIR, output_prefix)
     plt.close(fig)
 
 
 plot_metric_figure(
     metric="max_fitness",
     ylabel="Max fitness",
-    title="Max fitness across datasets",
     output_prefix="main_figure_max_fitness_four_datasets",
-    panel_letter="a",
     ylim=(0.0, 1.1),
     yticks=np.arange(0.0, 1.01, 0.2),
     std_col="max_fitness_std",
@@ -166,9 +151,7 @@ plot_metric_figure(
 plot_metric_figure(
     metric="top128_mean_fitness",
     ylabel="Mean of top 128 fitness",
-    title="Mean of top 128 fitness across datasets",
     output_prefix="supplementary_figure_top128_mean_fitness_four_datasets",
-    panel_letter="a",
     ylim=(0.0, 0.82),
     yticks=np.arange(0.0, 0.71, 0.1),
     std_col="top128_std",

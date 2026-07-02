@@ -61,6 +61,18 @@ NATURE_RCPARAMS: dict = {
 }
 
 
+# Compact 6pt text override — pass to apply_nature_rcparams() for figures
+# (e.g. bar charts with rotated tick labels) that need uniformly small text
+# but don't otherwise follow the 5.5pt raincloud/trajectory convention.
+COMPACT_6PT_RCPARAMS: dict = {
+    "font.size": 6.0,
+    "axes.labelsize": 6.0,
+    "axes.titlesize": 6.0,
+    "xtick.labelsize": 6.0,
+    "ytick.labelsize": 6.0,
+}
+
+
 def apply_nature_rcparams(overrides: dict | None = None) -> None:
     """Apply Nature-journal-style rcParams for publication-ready figures.
 
