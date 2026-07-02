@@ -30,9 +30,21 @@ sys.path.insert(0, _BENCH_ROOT)
 os.chdir(_BENCH_ROOT)
 
 from utils.plot_style_utils import (
-    VERMILION, method_color,
+    VERMILION, SECONDARY_GRAY,
     apply_nature_rcparams, save_figure, style_axis_hbar,
 )
+
+BASELINE_GRAY = SECONDARY_GRAY  # single flat color for all non-highlighted methods
+
+
+def _row_color(method, cfg):
+    return VERMILION if method in cfg["highlight"] else BASELINE_GRAY
+
+
+def _darken(color, factor=0.55):
+    """Darken a color for higher-contrast error-bar strokes."""
+    r, g, b = mcolors.to_rgb(color)
+    return (r * factor, g * factor, b * factor)
 
 _DEFAULT_FIGDIR = os.path.join(_BENCH_ROOT, "figures")
 
@@ -68,9 +80,16 @@ DS_ARCH = {
     "4site_TRPB": "TRPB",
 }
 
+# EVOLVEpro/MULTIevolve stored their TRPB run under the full "4site_TRPB"
+# archive name instead of the bare "TRPB" alias every other method uses.
+ARCH_OVERRIDE = {
+    ("EVOLVEpro", "4site_TRPB"): "4site_TRPB",
+    ("MULTIevolve", "4site_TRPB"): "4site_TRPB",
+}
+
 
 def _load_4site_seeds(method, dataset, cap=30):
-    arch = DS_ARCH.get(dataset, dataset)
+    arch = ARCH_OVERRIDE.get((method, dataset), DS_ARCH.get(dataset, dataset))
     pat = COMPETITOR_PATTERNS_4SITE.get(method)
     if pat is None:
         return []
@@ -133,8 +152,8 @@ TASKS = {
             "ftMLDE", "CLADE", "AlphaVariant", "MULTIevolve", "EVOLVEpro",
         },
         "highlight": {"AlphaVariant"},
-        "xlim": (0.2, 1.05),
-        "xticks": np.arange(0.2, 1.01, 0.2),
+        "xlim": (0.0, 1.05),
+        "xticks": np.arange(0.0, 1.01, 0.2),
         "prefix": "main_figure_max_fitness_raincloud",
         "panel_letter": "c",
         "label_kind": "four-site datasets",
@@ -153,8 +172,8 @@ TASKS = {
             "AdaLead", "MULTIevolve", "EVOLVEpro", "AiCE", "AlphaVariant",
         },
         "highlight": {"AlphaVariant"},
-        "xlim": (0.2, 1.05),
-        "xticks": np.arange(0.2, 1.01, 0.2),
+        "xlim": (0.0, 1.05),
+        "xticks": np.arange(0.0, 1.01, 0.2),
         "prefix": "main_figure_multisite_max_fitness_raincloud",
         "panel_letter": "d",
         "label_kind": "multi-site datasets",
@@ -165,7 +184,7 @@ TASKS = {
 # ------------------------------------------------------------------
 # Raincloud row drawing
 # ------------------------------------------------------------------
-def draw_raincloud_row(ax, values, y_center, color, highlight=False,
+def draw_raincloud_row(ax, values, y_center, color, bar_box_h, highlight=False,
                        violin_height=0.26, jitter_range=0.17):
     """Draw one horizontal raincloud row: half-violin + scatter + IQR box."""
     values = np.asarray(values, dtype=float)
@@ -173,76 +192,90 @@ def draw_raincloud_row(ax, values, y_center, color, highlight=False,
     if len(values) == 0:
         return
 
-    dot_s = 9 if highlight else 5
+    dot_s = 2.5
     dot_alpha = 0.65 if highlight else 0.45
-    box_h = 0.08 if highlight else 0.055
     vl_alpha = 0.50 if highlight else 0.30
     vl_lw = 0.9 if highlight else 0.5
-    med_s = 42 if highlight else 20
-    ec = "white" if highlight else "none"
-    ec_lw = 0.9 if highlight else 0
+    med_s = 12
+    bar_color = _darken(color)  # darker, higher-contrast Q1-Q3 bar + median line
+    med_color = bar_color if highlight else "black"
+    gap = bar_box_h / 2 + 0.035  # clearance between the bar and the violin/jitter
 
     if len(values) >= 4:
         try:
             kde = gaussian_kde(values)
             x_lo = max(values.min() - 0.06, 0.0)
-            x_hi = min(values.max() + 0.06, 1.05)
+            x_hi = min(values.max() + 0.06, 1.0)
             x_grid = np.linspace(x_lo, x_hi, 200)
             density = kde(x_grid)
             density_scaled = density / density.max() * violin_height
-            ax.fill_between(x_grid, y_center, y_center + density_scaled,
+            ax.fill_between(x_grid, y_center + gap, y_center + gap + density_scaled,
                             color=color, alpha=vl_alpha, linewidth=0, zorder=2)
-            ax.plot(x_grid, y_center + density_scaled,
+            ax.plot(x_grid, y_center + gap + density_scaled,
                     color=color, lw=vl_lw, alpha=0.85, zorder=3)
         except Exception:
             pass
 
-    jitter = np.random.uniform(-jitter_range, -0.02, len(values))
+    jitter = np.random.uniform(-jitter_range - gap, -gap, len(values))
     ax.scatter(values, y_center + jitter, s=dot_s, color=color,
                alpha=dot_alpha, linewidths=0, zorder=3)
 
     q1, med, q3 = np.percentile(values, [25, 50, 75])
-    rect = Rectangle((q1, y_center - box_h / 2), q3 - q1, box_h,
-                      facecolor="white", edgecolor=color,
-                      linewidth=1.1 if highlight else 0.75, zorder=4)
+    rect = Rectangle((q1, y_center - bar_box_h / 2), q3 - q1, bar_box_h,
+                      facecolor=bar_color, edgecolor=bar_color,
+                      linewidth=0.3, zorder=4)
     ax.add_patch(rect)
-    ax.vlines(med, y_center - box_h / 2, y_center + box_h / 2,
-              color=color, linewidth=1.6 if highlight else 1.0, zorder=5)
-    ax.scatter([med], [y_center], s=med_s, color=color,
-               edgecolors=ec, linewidths=ec_lw, zorder=6)
+    ax.vlines(med, y_center - bar_box_h / 2, y_center + bar_box_h / 2,
+              color="white", linewidth=1.1 if highlight else 0.7, zorder=5)
+    ax.scatter([med], [y_center], s=med_s, color=med_color,
+               edgecolors="none", linewidths=0, zorder=6)
 
 
 def global_method_order(df, cfg):
-    """Fixed method order (best overall mean rank → worst) from summary CSV."""
+    """Fixed method order: best mean rank first, mean score breaks ties."""
     datasets = cfg["dataset_order"]
     main_methods = cfg["main_methods"]
     sub = df[(df["dataset"].isin(datasets)) & (df["method"].isin(main_methods))].copy()
     sub["rank"] = sub.groupby("dataset")["max_fitness_median"].rank(
         ascending=False, method="average")
-    return sub.groupby("method")["rank"].mean().sort_values().index.tolist()
+    agg = sub.groupby("method").agg(
+        mean_rank=("rank", "mean"),
+        mean_score=("max_fitness_median", "mean"),
+    )
+    agg = agg.sort_values(["mean_rank", "mean_score"], ascending=[True, False])
+    return agg.index.tolist()
 
 
 def plot_raincloud_figure(task, outdir=None):
     cfg = TASKS[task]
     df = pd.read_csv(cfg["csv"])
-    seed_note = int(df["n"].max()) if "n" in df.columns else 30
     effective_outdir = outdir or cfg["outdir"]
 
-    # Best method (AlphaVariant) at y=0 → bottom row; worst at y=n-1 → top row.
-    methods = global_method_order(df, cfg)  # best first (rank 1 = index 0)
+    # Best method (AlphaVariant) at y=n-1 → top row; worst at y=0 → bottom row.
+    methods = global_method_order(df, cfg)[::-1]  # worst first (rank 1 = last index)
     n_methods = len(methods)
     ROW_STEP = 0.75
     y_centers = np.arange(n_methods, dtype=float) * ROW_STEP
 
     dataset_order = cfg["dataset_order"]
     n_panels = len(dataset_order)
+    MM_TO_IN = 1 / 25.4
+    FIG_HEIGHT_MM = 40
+    AXIS_BOTTOM, AXIS_TOP = 0.16, 0.90  # must match the subplots_adjust call below
     fig, axes = plt.subplots(
         1, n_panels,
-        figsize=(2.35 * n_panels + 1.25, 0.31 * n_methods + 0.9),
+        figsize=(80 * MM_TO_IN, FIG_HEIGHT_MM * MM_TO_IN),
         sharey=True,
     )
     axes = np.atleast_1d(axes)
     fig.patch.set_facecolor("white")
+
+    # Q1-Q3 bar height fixed at 0.3 mm in print, converted to data units from
+    # the actual axis geometry so it stays 0.3 mm regardless of n_methods.
+    data_y_range = (n_methods - 1) * ROW_STEP + 0.36 + 0.30
+    axis_height_mm = FIG_HEIGHT_MM * (AXIS_TOP - AXIS_BOTTOM)
+    mm_per_data_unit = axis_height_mm / data_y_range
+    bar_box_h = 0.3 / mm_per_data_unit
 
     raw_from_display = {DISPLAY_NAMES.get(m, m): m for m in methods}
 
@@ -253,36 +286,35 @@ def plot_raincloud_figure(task, outdir=None):
             if not vals:
                 continue
             draw_raincloud_row(ax, vals, y_centers[row_i],
-                               method_color(method),
+                               _row_color(method, cfg), bar_box_h,
                                highlight=(method in cfg["highlight"]))
 
         style_axis_hbar(ax, cfg["xlim"], cfg["xticks"])
-        ax.spines["left"].set_visible(False)
         ax.set_ylim(-0.30, (n_methods - 1) * ROW_STEP + 0.36)
         ax.set_yticks(y_centers)
-        ax.set_title(cfg["dataset_labels"][dataset], pad=5, fontweight="bold", fontsize=8.0)
-        ax.set_xlabel("Median max fitness", labelpad=3)
+        ax.set_title(cfg["dataset_labels"][dataset], pad=4, fontweight="bold", fontsize=5.5)
+        ax.set_xlabel("Median max fitness", labelpad=3, fontsize=5.5)
 
         if col == 0:
-            ax.tick_params(axis="y", length=0)
             ax.set_yticklabels(
-                [DISPLAY_NAMES.get(m, m) for m in methods], fontsize=7.0)
+                [DISPLAY_NAMES.get(m, m) for m in methods], fontsize=5.5)
             for tick in ax.get_yticklabels():
                 raw = raw_from_display.get(tick.get_text(), tick.get_text())
                 if raw in cfg["highlight"]:
                     tick.set_fontweight("bold")
                     tick.set_color(mcolors.to_hex(VERMILION))
         else:
-            ax.tick_params(axis="y", length=0, labelleft=False)
+            ax.tick_params(axis="y", labelleft=False)
 
-    fig.text(0.015, 0.975, cfg["panel_letter"],
-             fontsize=11.5, fontweight="bold", va="top", ha="left")
-    fig.suptitle(
-        f"Max fitness across {cfg['label_kind']}\n"
-        f"(n = {seed_note} independent runs; median with Q1–Q3 IQR)",
-        x=0.055, y=0.975, ha="left", va="top",
-        fontsize=8.5, fontweight="bold")
-    fig.subplots_adjust(left=0.155, right=0.988, bottom=0.16, top=0.83, wspace=0.12)
+    # Margins are set in absolute mm (not a fixed fraction) so the label column
+    # and inter-panel gaps stay constant in size as the figure widens.
+    fig_width_mm = fig.get_size_inches()[0] * 25.4
+    left_mm, right_pad_mm, gap_mm = 12.4, 0.96, 2.66
+    left = left_mm / fig_width_mm
+    right = 1 - right_pad_mm / fig_width_mm
+    axis_width_mm = ((right - left) * fig_width_mm - (n_panels - 1) * gap_mm) / n_panels
+    wspace = gap_mm / axis_width_mm
+    fig.subplots_adjust(left=left, right=right, bottom=AXIS_BOTTOM, top=AXIS_TOP, wspace=wspace)
 
     save_figure(fig, effective_outdir, cfg["prefix"])
     plt.close(fig)
@@ -297,7 +329,10 @@ def main():
                     help="output directory (default: task-specific figures/ subdir)")
     args = ap.parse_args()
 
-    apply_nature_rcparams({"xtick.labelsize": 6.8})
+    apply_nature_rcparams({
+        "axes.labelsize": 5.5, "axes.titlesize": 5.5,
+        "xtick.labelsize": 5.5, "ytick.labelsize": 5.5,
+    })
     np.random.seed(0)
 
     csv_path = TASKS[args.task]["csv"]

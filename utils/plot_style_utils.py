@@ -42,18 +42,19 @@ NATURE_RCPARAMS: dict = {
     "font.sans-serif": [
         "Arial", "Helvetica", "DejaVu Sans", "Liberation Sans", "sans-serif"
     ],
+    "font.size": 5.5,
     # Vector export — keep text as editable objects in Illustrator
     "pdf.fonttype": 42,   # embed TrueType; text stays selectable
     "ps.fonttype": 42,
     "svg.fonttype": "none",  # <text> nodes, not outlined paths
     # Axes & ticks
-    "axes.linewidth": 0.65,
+    "axes.linewidth": 0.25,
     "axes.labelsize": 8.0,
     "axes.titlesize": 8.8,
     "xtick.labelsize": 7.0,
     "ytick.labelsize": 7.0,
-    "xtick.major.width": 0.6,
-    "ytick.major.width": 0.6,
+    "xtick.major.width": 0.25,
+    "ytick.major.width": 0.25,
     # Resolution
     "figure.dpi": 120,
     "savefig.dpi": 600,
@@ -131,8 +132,8 @@ def prettify_ax(ax):
         ax.spines[sp].set_visible(False)
     for sp in ["left", "bottom"]:
         ax.spines[sp].set_color("#333333")
-        ax.spines[sp].set_linewidth(0.6)
-    ax.tick_params(axis="both", length=2.4, width=0.55, color="#333333", pad=2)
+        ax.spines[sp].set_linewidth(0.25)
+    ax.tick_params(axis="both", length=2.4, width=0.25, color="#333333", pad=2)
     ax.set_axisbelow(True)
 
 
