@@ -21,6 +21,7 @@ import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.ticker import NullLocator
 
 _BENCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, _BENCH_ROOT)
@@ -34,8 +35,13 @@ BENCH = _BENCH_ROOT
 DATASETS = ["4site_GB1", "4site_PhoQ", "4site_TRPB"]
 LABELS = {"4site_GB1": "GB1", "4site_PhoQ": "PhoQ",
           "4site_TRPB": "TrpB"}
-COLOR = {"4site_GB1": "#2c7fb8", "4site_PhoQ": "#d7191c",
-         "4site_TRPB": "#fdae61"}
+COLOR = {"4site_GB1": "#D4A017", "4site_PhoQ": "#C0392B",
+         "4site_TRPB": "#E07B39"}
+
+# Print size (mm). Fonts and line weights come from plot_style_utils:
+# 6 pt tick labels, 7 pt axis labels and panel titles, 0.3 pt axes and ticks.
+FIG_WIDTH_MM = 180
+FIG_HEIGHT_MM = 85
 
 
 def main():
@@ -45,7 +51,8 @@ def main():
     os.makedirs(outdir, exist_ok=True)
 
     MM_TO_IN = 1 / 25.4
-    fig, axes = plt.subplots(2, 3, figsize=(170 * MM_TO_IN, 90 * MM_TO_IN))
+    fig, axes = plt.subplots(2, 3, figsize=(FIG_WIDTH_MM * MM_TO_IN,
+                                           FIG_HEIGHT_MM * MM_TO_IN))
     rows = []
     for c, d in enumerate(DATASETS):
         df = pd.read_csv(os.path.join(BENCH, "data", d, "data.csv"))
@@ -71,6 +78,8 @@ def main():
         ax.text(0.96, 0.94, f"N={len(fn):,}\nmedian={med:.3g}\np99={p99:.2f}\n"
                 f">0.5: {frac50*100:.2f}%", transform=ax.transAxes, va="top", ha="right",
                 ma="left", fontsize=BASE_FONTSIZE)
+        # Decade ticks only; the log minor ticks read as uneven clutter at 6 pt.
+        ax.yaxis.set_minor_locator(NullLocator())
         prettify_ax(ax)
 
         # row 2: survival P(F > x), log y
@@ -86,11 +95,13 @@ def main():
         ax2.set_xlim(0, 1)
         if c == 0:
             ax2.set_ylabel("P(fitness > x)", fontsize=XLABEL_FONTSIZE)
+        ax2.yaxis.set_minor_locator(NullLocator())
         prettify_ax(ax2)
 
     fig.tight_layout()
 
-    save_figure(fig, outdir, "density_4site")
+    # bbox_inches=None keeps the page exactly FIG_WIDTH_MM x FIG_HEIGHT_MM.
+    save_figure(fig, outdir, "density_4site", bbox_inches=None)
     pd.DataFrame(rows).to_csv(os.path.join(outdir, "density_4site_stats.csv"), index=False)
     print(pd.DataFrame(rows).to_string(index=False))
 
