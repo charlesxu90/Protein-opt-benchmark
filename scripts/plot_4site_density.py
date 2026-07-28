@@ -8,7 +8,7 @@ benchmarks. For each dataset:
             random draw exceeds threshold x. This is the single best predictor of
             how hard "find a high-fitness variant in 480 queries" is.
 
-Saves figures/4site_benchmarks/density_4site.{png,pdf,svg} + a stats CSV.
+Saves figures/4site_benchmarks/density_4site.pdf + a stats CSV.
 
 Usage: python scripts/plot_4site_density.py
 """

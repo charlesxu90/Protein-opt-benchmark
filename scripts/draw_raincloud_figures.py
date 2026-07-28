@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 """
-Draw horizontal raincloud plots for the protein optimization benchmark.
+Draw horizontal dot + IQR whisker plots for the protein optimization benchmark.
 
-Each method row shows three layers:
-  - Half-violin (KDE of per-seed distribution) above the row centre
-  - Jittered scatter of individual seed values below
-  - IQR box with median dot at centre
+Each method row shows the per-seed distribution as:
+  - Whisker spanning Q1-Q3 with end caps
+  - Median dot at the row centre
 
   --task 4site     : 4-site benchmark (GB1, PhoQ, TrpB)  [default]
   --task multisite : multi-site oracle benchmark (AAV, CreiLOV, PAB1)
@@ -13,144 +12,47 @@ Each method row shows three layers:
   --metric max_fitness : per-seed best fitness found                [default]
   --metric top128       : per-seed top-128 mean fitness
 
-Outputs: {outdir}/{prefix}.{png,pdf,svg}
+Outputs: {outdir}/{prefix}.pdf
 """
 import argparse
-import glob
-import json
 import os
 import sys
 
-import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.patches import Rectangle
-from scipy.stats import gaussian_kde
+from matplotlib.ticker import FormatStrFormatter
 
 _BENCH_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _BENCH_ROOT)
 os.chdir(_BENCH_ROOT)
 
 from utils.plot_style_utils import (
-    VERMILION, SECONDARY_GRAY,
-    BASE_FONTSIZE, DEFAULT_FIGURE_RCPARAMS, TITLE_FONTSIZE, XLABEL_FONTSIZE,
-    apply_nature_rcparams, save_figure, style_axis_hbar,
+    BASE_FONTSIZE, DEFAULT_FIGURE_RCPARAMS, DOT_DIAMETER_MM, DOT_SIZE,
+    TITLE_FONTSIZE, XLABEL_FONTSIZE, apply_nature_rcparams, save_figure,
+    style_axis_hbar,
 )
+from utils.seed_values import load_seeds
 
-BASELINE_GRAY = SECONDARY_GRAY  # single flat color for all non-highlighted methods
+AV_DOT = "#C0392B"        # AlphaVariant median dot + y-tick label
+AV_WHISKER = "#C0392B"    # AlphaVariant IQR whisker
+BASE_DOT = "#2C3E50"      # all other methods, median dot
+BASE_WHISKER = "#95A5A6"  # all other methods, IQR whisker
 
 
-def _row_color(method, cfg):
-    return VERMILION if method in cfg["highlight"] else BASELINE_GRAY
-
-
-def _darken(color, factor=0.55):
-    """Darken a color for higher-contrast error-bar strokes."""
-    r, g, b = mcolors.to_rgb(color)
-    return (r * factor, g * factor, b * factor)
+def _row_colors(method, cfg):
+    """(median dot, IQR whisker) colors for one method row."""
+    if method in cfg["highlight"]:
+        return AV_DOT, AV_WHISKER
+    return BASE_DOT, BASE_WHISKER
 
 _DEFAULT_FIGDIR = os.path.join(_BENCH_ROOT, "figures")
 
 DISPLAY_NAMES = {"FLEXS": "AdaLead"}
 
-# ------------------------------------------------------------------
-# 4-site: per-seed value loading
-# ------------------------------------------------------------------
-GMAX_4SITE = {
-    "4site_GB1": 8.761966,
-    "4site_PhoQ": 133.5943,
-    "4site_TEV": 1.0,
-    "4site_TRPB": 1.0,
-}
-
-COMPETITOR_PATTERNS_4SITE = {
-    "Random":       "Random/results/{a}_Random/{a}/random/metrics_seed*.json",
-    "GreedyWalk":   "GreedyWalk/results/{a}_GreedyWalk/{a}/greedy/metrics_seed*.json",
-    "ALDE":         "ALDE/results/{a}_ALDE/{a}/onehot/metrics_seed*.json",
-    "FLEXS":        "FLEXS/results/{a}_AdaLead/{a}/metrics_seed*.json",
-    "AiCE":         "AiCE/results/{a}_AiCE/{a}/aice/metrics_seed*.json",
-    "ftMLDE":       "ftMLDE/results/{a}_ftMLDE/{a}/ftmlde/metrics_seed*.json",
-    "CLADE":        "CLADE/results/{a}_CLADE/{a}/clade/metrics_seed*.json",
-    "EVOLVEpro":    "EVOLVEpro/results/{a}_EVOLVEpro/{a}/*/metrics_seed*.json",
-    "MULTIevolve":  "MULTIevolve/results/{a}_MULTIevolve/{a}/*/metrics_seed*.json",
-    "AlphaVariant": "alphavariant/results/_archive_tier1B_canonical/{arch}/seed_*/metrics.json",
-}
-
-DS_ARCH = {
-    "4site_GB1":  "4site_GB1",
-    "4site_PhoQ": "4site_PhoQ",
-    "4site_TEV":  "4site_TEV",
-    "4site_TRPB": "TRPB",
-}
-
-# EVOLVEpro/MULTIevolve stored their TRPB run under the full "4site_TRPB"
-# archive name instead of the bare "TRPB" alias every other method uses.
-ARCH_OVERRIDE = {
-    ("EVOLVEpro", "4site_TRPB"): "4site_TRPB",
-    ("MULTIevolve", "4site_TRPB"): "4site_TRPB",
-}
-
-
-# Per-seed metric key to read from the raw metrics.json, per task/metric.
-# 4-site "top128" is already normalized to [0,1] (no gmax division needed);
-# multisite oracle "top128" uses its own pre-normalized field.
-METRIC_KEY_4SITE = {
-    "max_fitness": "max_fitness",
-    "top128": "normalized_fitness_median_top128",
-}
-METRIC_KEY_ORACLE = {
-    "max_fitness": "max_fitness_norm",
-    "top128": "top128_mean_norm",
-}
-
-
-def _load_4site_seeds(method, dataset, metric="max_fitness", cap=30):
-    arch = ARCH_OVERRIDE.get((method, dataset), DS_ARCH.get(dataset, dataset))
-    pat = COMPETITOR_PATTERNS_4SITE.get(method)
-    if pat is None:
-        return []
-    pattern = pat.format(a=arch, arch=arch)
-    gmax = GMAX_4SITE.get(dataset, 1.0)
-    key = METRIC_KEY_4SITE[metric]
-    vals = []
-    for fp in sorted(glob.glob(pattern))[:cap]:
-        try:
-            d = json.load(open(fp))
-            m = d.get("metrics") or d.get("final_metrics") or d
-            if isinstance(m, list):
-                m = m[-1]
-            v = m.get(key)
-            if v is None:
-                continue
-            if metric == "max_fitness" and v > 1.5 and gmax != 1.0:
-                v = v / gmax
-            if 0.0 <= v <= 1.5:
-                vals.append(float(v))
-        except Exception:
-            pass
-    return vals
-
-
-def _load_oracle_seeds(method, dataset, metric="max_fitness", cap=30):
-    pattern = f"results_oracle/{dataset}/{method}/seed*.json"
-    key = METRIC_KEY_ORACLE[metric]
-    vals = []
-    for fp in sorted(glob.glob(pattern))[:cap]:
-        try:
-            d = json.load(open(fp))
-            v = d.get("metrics", {}).get(key)
-            if v is not None and 0.0 <= v <= 1.5:
-                vals.append(float(v))
-        except Exception:
-            pass
-    return vals
-
-
 def load_seed_values(method, dataset, task, metric="max_fitness"):
-    if task == "4site":
-        return _load_4site_seeds(method, dataset, metric=metric)
-    return _load_oracle_seeds(method, dataset, metric=metric)
+    """Per-seed values for one method/dataset (see utils.seed_values)."""
+    return list(load_seeds(method, dataset, task, metric=metric).values())
 
 
 # ------------------------------------------------------------------
@@ -171,8 +73,19 @@ TASKS = {
             "ftMLDE", "CLADE", "AlphaVariant", "MULTIevolve", "EVOLVEpro",
         },
         "highlight": {"AlphaVariant"},
-        "xlim": (0.0, 1.05),
-        "xticks": np.arange(0.0, 1.01, 0.2),
+        # max_fitness: one shared tick list for all three panels, whose spreads
+        # are wide enough (3.5-4.3 mm) to read on a common 0-1 axis.
+        # top128: per-panel, since the panels top out at very different values
+        # (PhoQ max Q3 = 0.14 vs TrpB 0.66) and a shared axis leaves PhoQ's IQR
+        # at 0.93 mm — under the dot diameter.
+        "xrange": {
+            "max_fitness": [0.0, 0.5, 1.0],
+            "top128": {
+                "4site_GB1":  [0.0, 0.2, 0.4, 0.6],
+                "4site_PhoQ": [0.0, 0.05, 0.10, 0.15],
+                "4site_TRPB": [0.0, 0.4, 0.8],  # 3 ticks: 21 mm panels are narrow
+            },
+        },
         "prefix": {
             "max_fitness": "main_figure_max_fitness_raincloud",
             "top128": "supplementary_figure_top128_mean_fitness_raincloud",
@@ -194,8 +107,25 @@ TASKS = {
             "AdaLead", "MULTIevolve", "EVOLVEpro", "AiCE", "AlphaVariant",
         },
         "highlight": {"AlphaVariant"},
-        "xlim": (0.0, 1.05),
-        "xticks": np.arange(0.0, 1.01, 0.2),
+        # max_fitness: one shared range across the three panels (panel d of the
+        # combined figure). top128: None = fit each panel to its own data, since
+        # a pinned 0.4-1.0 there would clip four rows, two of them median dots.
+        # Per-panel fixed ranges: every method sits in a narrow band, so a
+        # shared axis compresses the IQR whiskers below the dot diameter. Ticks
+        # are round, fixed values bracketing the panel's Q1-Q3 extent; the axis
+        # limits are derived from them (see fixed_xlim_from_ticks).
+        "xrange": {
+            "max_fitness": {
+                "ms_AAV":     [0.50, 0.60, 0.70, 0.80],
+                "ms_CreiLOV": [0.85, 0.90, 0.95, 1.00],
+                "ms_PAB1":    [0.40, 0.50, 0.60],
+            },
+            "top128": {
+                "ms_AAV":     [0.30, 0.50, 0.70],  # min Q1 = 0.396, max Q3 = 0.664
+                "ms_CreiLOV": [0.75, 0.85, 0.95],
+                "ms_PAB1":    [0.25, 0.35, 0.45, 0.55],
+            },
+        },
         "prefix": {
             "max_fitness": "main_figure_multisite_max_fitness_raincloud",
             "top128": "supplementary_figure_multisite_top128_mean_fitness_raincloud",
@@ -206,72 +136,78 @@ TASKS = {
 }
 
 # Metric to rank/plot by. rank_col must exist in each task's source CSV.
-# fig_w_mm / fig_h_mm set the print size (max fitness stays compact; top-128
-# is drawn wider/taller for the supplementary layout).
+# fig_w_mm / fig_h_mm set the exact print size (max fitness is the single-column
+# main figure; top-128 is drawn wider for the supplementary layout).
 METRIC_CONFIG = {
     "max_fitness": {
         "rank_col": "max_fitness_median",
         "xlabel": "Median max fitness",
-        "fig_w_mm": 80,
+        "fig_w_mm": 89,
         "fig_h_mm": 40,
     },
     "top128": {
         "rank_col": "top128_median",
         "xlabel": "Top-128 fitness",
-        "fig_w_mm": 170,
-        "fig_h_mm": 45,
+        "fig_w_mm": 89,
+        "fig_h_mm": 40,
     },
 }
 
 
 # ------------------------------------------------------------------
-# Raincloud row drawing
+# Dot + IQR whisker row drawing
 # ------------------------------------------------------------------
-def draw_raincloud_row(ax, values, y_center, color, bar_box_h, highlight=False,
-                       violin_height=0.26, jitter_range=0.17):
-    """Draw one horizontal raincloud row: half-violin + scatter + IQR box."""
+# Uniform for every method: only colour marks the highlighted method.
+# DOT_SIZE is shared with the trajectory figures via plot_style_utils.
+WHISKER_LW = 0.5
+CAP_SIZE = 1.5   # points, so it stays fixed in print
+DOT_RADIUS_MM = DOT_DIAMETER_MM / 2  # sets the right-edge clearance
+
+
+def draw_dot_whisker_row(ax, values, y_center, dot_color, whisker_color):
+    """Draw one horizontal row: Q1-Q3 whisker with caps + median dot."""
     values = np.asarray(values, dtype=float)
     values = values[np.isfinite(values)]
     if len(values) == 0:
         return
 
-    dot_s = 2.5
-    dot_alpha = 0.65 if highlight else 0.45
-    vl_alpha = 0.50 if highlight else 0.30
-    vl_lw = 0.9 if highlight else 0.5
-    med_s = 12
-    bar_color = _darken(color)  # darker, higher-contrast Q1-Q3 bar + median line
-    med_color = bar_color if highlight else "black"
-    gap = bar_box_h / 2 + 0.035  # clearance between the bar and the violin/jitter
-
-    if len(values) >= 4:
-        try:
-            kde = gaussian_kde(values)
-            x_lo = max(values.min() - 0.06, 0.0)
-            x_hi = min(values.max() + 0.06, 1.0)
-            x_grid = np.linspace(x_lo, x_hi, 200)
-            density = kde(x_grid)
-            density_scaled = density / density.max() * violin_height
-            ax.fill_between(x_grid, y_center + gap, y_center + gap + density_scaled,
-                            color=color, alpha=vl_alpha, linewidth=0, zorder=2)
-            ax.plot(x_grid, y_center + gap + density_scaled,
-                    color=color, lw=vl_lw, alpha=0.85, zorder=3)
-        except Exception:
-            pass
-
-    jitter = np.random.uniform(-jitter_range - gap, -gap, len(values))
-    ax.scatter(values, y_center + jitter, s=dot_s, color=color,
-               alpha=dot_alpha, linewidths=0, zorder=3)
-
     q1, med, q3 = np.percentile(values, [25, 50, 75])
-    rect = Rectangle((q1, y_center - bar_box_h / 2), q3 - q1, bar_box_h,
-                      facecolor=bar_color, edgecolor=bar_color,
-                      linewidth=0.3, zorder=4)
-    ax.add_patch(rect)
-    ax.vlines(med, y_center - bar_box_h / 2, y_center + bar_box_h / 2,
-              color="white", linewidth=1.1 if highlight else 0.7, zorder=5)
-    ax.scatter([med], [y_center], s=med_s, color=med_color,
-               edgecolors="none", linewidths=0, zorder=6)
+    ax.errorbar(med, y_center, xerr=[[med - q1], [q3 - med]], fmt="none",
+                ecolor=whisker_color, elinewidth=WHISKER_LW,
+                capsize=CAP_SIZE, capthick=WHISKER_LW, zorder=4)
+    ax.scatter([med], [y_center], s=DOT_SIZE, color=dot_color,
+               edgecolors="none", linewidths=0, zorder=5)
+
+
+def fixed_xlim_from_ticks(ticks, axis_width_mm):
+    """Axis limits for a fixed tick list: starts exactly on the first tick.
+
+    The right bound clears the last tick by half a dot so a median landing on it
+    (e.g. 4-site methods that reach 1.0) is not sliced by the panel edge.
+    """
+    lo, hi = ticks[0], ticks[-1]
+    margin = DOT_RADIUS_MM * (hi - lo) / axis_width_mm
+    return (lo, hi + margin)
+
+
+def tick_decimals(tick_lists):
+    """1 decimal if every tick lands on a 0.1 grid, else 2 — one format per figure."""
+    flat = [t for ticks in tick_lists for t in ticks]
+    return 1 if all(abs(t * 10 - round(t * 10)) < 1e-9 for t in flat) else 2
+
+
+def warn_if_clipped(panel_values, methods, dataset, xlim):
+    """Report any drawn element (Q1, median, Q3) outside a pinned x range."""
+    for method, values in zip(methods, panel_values):
+        if len(values) < 4:
+            continue
+        q1, med, q3 = np.percentile(values, [25, 50, 75])
+        outside = [f"{name}={v:.3f}" for name, v in
+                   (("Q1", q1), ("median", med), ("Q3", q3))
+                   if v < xlim[0] or v > xlim[1]]
+        if outside:
+            print(f"  WARNING: {dataset} {method} outside xlim {xlim}: "
+                  f"{', '.join(outside)}")
 
 
 def global_method_order(df, cfg, rank_col="max_fitness_median"):
@@ -306,7 +242,9 @@ def plot_raincloud_figure(task, metric="max_fitness", outdir=None):
     MM_TO_IN = 1 / 25.4
     FIG_WIDTH_MM = metric_cfg["fig_w_mm"]
     FIG_HEIGHT_MM = metric_cfg["fig_h_mm"]
-    AXIS_BOTTOM, AXIS_TOP = 0.16, 0.90  # must match the subplots_adjust call below
+    # Bottom band holds the x tick labels + the single x-axis label; sized to
+    # keep them inside the page now that it is no longer cropped to content.
+    AXIS_BOTTOM, AXIS_TOP = 0.175, 0.90  # must match the subplots_adjust call below
     fig, axes = plt.subplots(
         1, n_panels,
         figsize=(FIG_WIDTH_MM * MM_TO_IN, FIG_HEIGHT_MM * MM_TO_IN),
@@ -315,30 +253,48 @@ def plot_raincloud_figure(task, metric="max_fitness", outdir=None):
     axes = np.atleast_1d(axes)
     fig.patch.set_facecolor("white")
 
-    # Q1-Q3 bar height fixed at 0.3 mm in print, converted to data units from
-    # the actual axis geometry so it stays 0.3 mm regardless of n_methods.
-    data_y_range = (n_methods - 1) * ROW_STEP + 0.36 + 0.30
-    axis_height_mm = FIG_HEIGHT_MM * (AXIS_TOP - AXIS_BOTTOM)
-    mm_per_data_unit = axis_height_mm / data_y_range
-    bar_box_h = 0.3 / mm_per_data_unit
+    # Margins are set in absolute mm (not a fixed fraction) so the label column
+    # and inter-panel gaps stay constant in size as the figure widens. Resolved
+    # before drawing because the panel width sets the x-limit margin below.
+    # left_mm fits the longest method label ("MULTIevolve") inside the page.
+    # right_pad_mm holds the half of the last tick label that overhangs the panel
+    # edge, now that the axis stops just past the final tick.
+    # gap_mm must fit the facing halves of two 4-character tick labels (~4.2 mm
+    # wide each) now that ticks sit at the panel edges.
+    left_mm, right_pad_mm, gap_mm = 14.0, 1.8, 4.8
+    left = left_mm / FIG_WIDTH_MM
+    right = 1 - right_pad_mm / FIG_WIDTH_MM
+    axis_width_mm = ((right - left) * FIG_WIDTH_MM - (n_panels - 1) * gap_mm) / n_panels
 
     raw_from_display = {DISPLAY_NAMES.get(m, m): m for m in methods}
 
+    # A tick list per panel; one shared list is broadcast to every panel.
+    spec = cfg["xrange"][metric]
+    panel_ticks = (dict(spec) if isinstance(spec, dict)
+                   else {ds: spec for ds in dataset_order})
+    tick_format = FormatStrFormatter(f"%.{tick_decimals(panel_ticks.values())}f")
+
     for col, (ax, dataset) in enumerate(zip(axes, dataset_order)):
-        np.random.seed(col)
+        panel_values = [load_seed_values(method, dataset, task, metric=metric)
+                        for method in methods]
         for row_i, method in enumerate(methods):
-            vals = load_seed_values(method, dataset, task, metric=metric)
+            vals = panel_values[row_i]
             if not vals:
                 continue
-            draw_raincloud_row(ax, vals, y_centers[row_i],
-                               _row_color(method, cfg), bar_box_h,
-                               highlight=(method in cfg["highlight"]))
+            dot_color, whisker_color = _row_colors(method, cfg)
+            draw_dot_whisker_row(ax, vals, y_centers[row_i],
+                                 dot_color, whisker_color)
 
-        style_axis_hbar(ax, cfg["xlim"], cfg["xticks"])
+        xticks = panel_ticks[dataset]
+        xlim = fixed_xlim_from_ticks(xticks, axis_width_mm)
+        warn_if_clipped(panel_values, methods, dataset, xlim)
+        ax.xaxis.set_major_formatter(tick_format)
+        style_axis_hbar(ax, xlim, xticks)
         ax.set_ylim(-0.30, (n_methods - 1) * ROW_STEP + 0.36)
         ax.set_yticks(y_centers)
         ax.set_title(cfg["dataset_labels"][dataset], pad=4, fontsize=TITLE_FONTSIZE)
-        ax.set_xlabel(metric_cfg["xlabel"], labelpad=3, fontsize=XLABEL_FONTSIZE)
+        if col == n_panels // 2:  # one x-axis label, centred under the middle panel
+            ax.set_xlabel(metric_cfg["xlabel"], labelpad=3, fontsize=XLABEL_FONTSIZE)
 
         if col == 0:
             ax.set_yticklabels(
@@ -346,21 +302,16 @@ def plot_raincloud_figure(task, metric="max_fitness", outdir=None):
             for tick in ax.get_yticklabels():
                 raw = raw_from_display.get(tick.get_text(), tick.get_text())
                 if raw in cfg["highlight"]:
-                    tick.set_color(mcolors.to_hex(VERMILION))
+                    tick.set_color(AV_DOT)
         else:
             ax.tick_params(axis="y", labelleft=False)
 
-    # Margins are set in absolute mm (not a fixed fraction) so the label column
-    # and inter-panel gaps stay constant in size as the figure widens.
-    fig_width_mm = fig.get_size_inches()[0] * 25.4
-    left_mm, right_pad_mm, gap_mm = 12.4, 0.96, 2.66
-    left = left_mm / fig_width_mm
-    right = 1 - right_pad_mm / fig_width_mm
-    axis_width_mm = ((right - left) * fig_width_mm - (n_panels - 1) * gap_mm) / n_panels
-    wspace = gap_mm / axis_width_mm
-    fig.subplots_adjust(left=left, right=right, bottom=AXIS_BOTTOM, top=AXIS_TOP, wspace=wspace)
+    fig.subplots_adjust(left=left, right=right, bottom=AXIS_BOTTOM, top=AXIS_TOP,
+                        wspace=gap_mm / axis_width_mm)
 
-    save_figure(fig, effective_outdir, cfg["prefix"][metric])
+    # bbox_inches=None: the layout is authored in absolute mm, so the page must
+    # stay exactly fig_w_mm x fig_h_mm rather than being cropped to content.
+    save_figure(fig, effective_outdir, cfg["prefix"][metric], bbox_inches=None)
     plt.close(fig)
 
 
@@ -376,7 +327,6 @@ def main():
     args = ap.parse_args()
 
     apply_nature_rcparams(DEFAULT_FIGURE_RCPARAMS)
-    np.random.seed(0)
 
     csv_path = TASKS[args.task]["csv"]
     if not os.path.exists(csv_path):

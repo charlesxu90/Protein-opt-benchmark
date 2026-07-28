@@ -12,7 +12,7 @@ For each multi-site dataset, produces two diagnostics:
           distribution and per-position observed alphabet, so the comparison stays
           inside the realistic design space (not wild extrapolation).
 
-Output: figures/ms_oracles/oracle_diagnostics.{png,pdf,svg}
+Output: figures/ms_oracles/oracle_diagnostics.pdf
 
 Usage:
     python scripts/plot_oracle_diagnostics.py --device cuda:0

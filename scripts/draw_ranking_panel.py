@@ -15,7 +15,7 @@ CSVs (``figures/alphavariant_comparison_median_iqr.csv`` and
 so the figure stays in sync with the data. Lower rank = better (rank 1 = best
 median on that dataset; ties share the average rank).
 
-Outputs ``<prefix>.{pdf,png}`` into ``--outdir`` (default: figures/).
+Outputs ``<prefix>.pdf`` into ``--outdir`` (default: figures/).
 """
 from __future__ import annotations
 
@@ -27,24 +27,29 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import FancyArrowPatch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_FIGDIR = os.path.join(ROOT, "figures")
 MM_TO_IN = 1 / 25.4
 
 # --- palette -----------------------------------------------------------------
-# AlphaVariant colour unified with the performance figures (vermilion). Per-
-# dataset dots darkened from the prototype (#B8B8B8) so they survive printing
-# and typesetting.
 sys.path.insert(0, ROOT)
-from utils.plot_style_utils import VERMILION, apply_nature_rcparams, save_figure  # noqa: E402
+from utils.plot_style_utils import (  # noqa: E402
+    AXIS_LW, GRID_COLOR, GRID_DASH, apply_nature_rcparams, save_figure,
+)
 
-ALPHA_RED = VERMILION
-DOT_GRAY = "#8A8A8A"
-DOT_GRAY_EDGE = "#5F5F5F"
+ALPHA_RED = "#C0392B"   # AlphaVariant mean rank + its tick label
+DOT_GRAY = "#AAAAAA"    # individual dataset ranks
+MEAN_EDGE = "#333333"   # mean rank across datasets (open circle)
 LINE_GRAY = "#D4D4D4"
-GRID_GRAY = "#E6E6E6"
 TEXT_GRAY = "#444444"
+
+# Marker diameters in points; scatter() takes the area, hence the squares.
+DATASET_DOT_PT = 2.0
+MEAN_DOT_PT = 3.0
+DATASET_DOT_SIZE = DATASET_DOT_PT ** 2
+MEAN_DOT_SIZE = MEAN_DOT_PT ** 2
 
 # Canonical method label set (10 methods). FLEXS (4-site) and AdaLead
 # (multi-site) are the same AdaLead algorithm and are unified under "AdaLead".
@@ -67,6 +72,7 @@ MAIN_METHODS_MULTISITE = {
 
 GROUPS = {
     "Four-site": {
+        "slug": "4site",
         "csv": os.path.join(DEFAULT_FIGDIR, "alphavariant_comparison_median_iqr.csv"),
         "allow": MAIN_METHODS_4SITE,
         "dataset_labels": {
@@ -75,6 +81,7 @@ GROUPS = {
         },
     },
     "Multisite": {
+        "slug": "multisite",
         "csv": os.path.join(DEFAULT_FIGDIR, "ms_oracles", "multisite_oracle_median_iqr.csv"),
         "allow": MAIN_METHODS_MULTISITE,
         "dataset_labels": {
@@ -83,6 +90,22 @@ GROUPS = {
         },
     },
 }
+
+# Print size, matching the dot + whisker figures. The text bands are absolute mm
+# so the panels absorb any height change: the top holds the panel titles, the
+# bottom the x tick labels, the x-axis label, the "better" arrow and the legend.
+FIG_WIDTH_MM = 89
+FIG_HEIGHT_MM = 45
+TOP_BAND_MM = 4.4  # benchmark name
+# The bottom band stacks, from the axes down: x tick labels, the per-panel
+# metric name, the "better" arrow, the shared x-axis label and the legend row.
+# Positions are mm from the page bottom, spaced to keep elements clear.
+BOTTOM_BAND_MM = 16.8
+ARROW_Y_MM = 8.6
+XLABEL_Y_MM = 5.9
+ARROW_SPAN_MM = 8.0      # arrow length
+ARROW_TEXT_GAP_MM = 0.8  # arrow tail to "better"
+BETTER_TEXT_W_MM = 5.4   # rendered width of "better" at 6 pt
 
 apply_nature_rcparams()
 
@@ -127,25 +150,27 @@ def _draw_group(ax, table: pd.DataFrame, title: str, n_methods: int) -> None:
     mean_rank = tp["Mean rank"].to_numpy(float)
 
     worst = n_methods  # stem origin = worst possible rank
-    ax.hlines(y, worst, mean_rank, color=LINE_GRAY, lw=0.8, zorder=1)
+    ax.hlines(y, worst, mean_rank, color=LINE_GRAY, lw=0.75, zorder=1)
 
     # individual dataset ranks: deliberately gray, jittered vertically
     offsets = np.linspace(-0.20, 0.20, len(dataset_cols))
     for di, ds in enumerate(dataset_cols):
         vals = tp[ds].to_numpy(float)
         mask = ~np.isnan(vals)
-        ax.scatter(vals[mask], y[mask] + offsets[di], s=10,
-                   facecolor=DOT_GRAY, edgecolor=DOT_GRAY_EDGE,
-                   linewidth=0.25, alpha=0.85, zorder=2)
+        ax.scatter(vals[mask], y[mask] + offsets[di], s=DATASET_DOT_SIZE,
+                   facecolor=DOT_GRAY, edgecolors="none", linewidth=0,
+                   alpha=0.85, zorder=2)
 
     # mean rank: open circles, AlphaVariant as red filled
     is_alpha = np.array([m == "AlphaVariant" for m in tp.index])
-    ax.scatter(mean_rank[~is_alpha], y[~is_alpha], s=30, facecolor="white",
-               edgecolor="#202020", linewidth=0.7, zorder=4)
-    ax.scatter(mean_rank[is_alpha], y[is_alpha], s=38, facecolor=ALPHA_RED,
-               edgecolor="white", linewidth=0.6, zorder=5)
+    ax.scatter(mean_rank[~is_alpha], y[~is_alpha], s=MEAN_DOT_SIZE,
+               facecolor="white", edgecolor=MEAN_EDGE, linewidth=0.5, zorder=4)
+    ax.scatter(mean_rank[is_alpha], y[is_alpha], s=MEAN_DOT_SIZE,
+               facecolor=ALPHA_RED, edgecolors="none", linewidth=0, zorder=5)
 
-    ax.set_title(title, loc="left", fontsize=7, fontweight="normal", pad=5)
+    # The metric name sits under the panel (above the shared "better" arrow),
+    # leaving the top band for the benchmark name.
+    ax.set_xlabel(title, fontsize=7, fontweight="normal", labelpad=2)
     ax.set_yticks(y)
     ax.set_yticklabels(tp.index, fontsize=6)
     for lab in ax.get_yticklabels():
@@ -156,89 +181,124 @@ def _draw_group(ax, table: pd.DataFrame, title: str, n_methods: int) -> None:
     ax.set_xlim(0.55, worst + 0.4)  # Rank 1 (best) on the left
     ticks = sorted({1, 2, 4, 6, 8, worst})
     ax.set_xticks([t for t in ticks if t <= worst])
-    ax.set_xlabel("Mean rank (1 = best)", fontsize=7, fontweight="normal", labelpad=8)
-    ax.grid(axis="x", color=GRID_GRAY, lw=0.5)
+    # x-axis label and the "better" arrow are drawn once per figure, in
+    # draw_panel, centred on the plot area.
+    ax.grid(axis="x", color=GRID_COLOR, lw=0.55, linestyle=GRID_DASH)
     ax.set_axisbelow(True)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.spines["left"].set_linewidth(0.25)
-    ax.spines["bottom"].set_linewidth(0.25)
-    ax.tick_params(axis="y", labelsize=6, length=2.4, width=0.25, pad=2)
-    ax.tick_params(axis="x", labelsize=6, length=2.4, width=0.25, pad=2)
-
-    # directional indicator: best rank sits on the left
-    ax.annotate("better", xy=(0.0, -0.185), xytext=(0.30, -0.185),
-                xycoords="axes fraction", textcoords="axes fraction",
-                fontsize=6, color=TEXT_GRAY, va="center", ha="left",
-                arrowprops=dict(arrowstyle="->", color=TEXT_GRAY, lw=0.8))
+    ax.spines["left"].set_linewidth(AXIS_LW)
+    ax.spines["bottom"].set_linewidth(AXIS_LW)
+    ax.tick_params(axis="y", labelsize=6, length=2.4, width=AXIS_LW, pad=2)
+    ax.tick_params(axis="x", labelsize=6, length=2.4, width=AXIS_LW, pad=2)
 
 
-def draw_panel(tables: Dict[str, pd.DataFrame], metric_label: str,
-               outdir: str, prefix: str, n_seeds: int = 30) -> List[str]:
+
+def draw_panel(tables: Dict[str, pd.DataFrame], outdir: str, prefix: str,
+               group_label: str = "") -> List[str]:
+    """One figure per benchmark; ``tables`` maps panel title -> rank table."""
     import matplotlib.lines as mlines
-    import matplotlib.patches as mpatches
 
-    fig = plt.figure(figsize=(100 * MM_TO_IN, 45 * MM_TO_IN), dpi=600)
-    gs = fig.add_gridspec(1, 2, left=0.14, right=0.985,
-                          bottom=0.30, top=0.86, wspace=0.55)
-    for gi, (group, table) in enumerate(tables.items()):
+    fig = plt.figure(figsize=(FIG_WIDTH_MM * MM_TO_IN, FIG_HEIGHT_MM * MM_TO_IN),
+                     dpi=600)
+    # Margins in absolute mm. Both the left column and the inter-panel gap have
+    # to hold a column of method names ("MULTIevolve" is the longest).
+    left_mm, right_pad_mm, gap_mm = 15.0, 1.2, 16.2
+    n_panels = len(tables)
+    left = left_mm / FIG_WIDTH_MM
+    right = 1 - right_pad_mm / FIG_WIDTH_MM
+    axis_width_mm = ((right - left) * FIG_WIDTH_MM - (n_panels - 1) * gap_mm) / n_panels
+    gs = fig.add_gridspec(1, n_panels, left=left, right=right,
+                          bottom=BOTTOM_BAND_MM / FIG_HEIGHT_MM,
+                          top=1 - TOP_BAND_MM / FIG_HEIGHT_MM,
+                          wspace=gap_mm / axis_width_mm)
+    for gi, (title, table) in enumerate(tables.items()):
         ax = fig.add_subplot(gs[0, gi])
-        _draw_group(ax, table, f"{group}", len(table))
+        _draw_group(ax, table, title, len(table))
+
+    # Name the benchmark centred at the top: the two files are otherwise
+    # identical in layout and could not be told apart once exported.
+    if group_label:
+        fig.text(0.5, 1 - 0.9 / FIG_HEIGHT_MM, group_label,
+                 fontsize=7, ha="center", va="top")
+
+    # One x-axis label per figure, centred on the plot area (not on the page,
+    # which would sit left of centre because of the method-label column).
+    plot_centre = (left + right) / 2
+    fig.text(plot_centre, XLABEL_Y_MM / FIG_HEIGHT_MM, "Mean rank (1 = best)",
+             fontsize=7, ha="center", va="center")
+    # Directional indicator, drawn once: best rank sits on the left. The
+    # arrow + label pair is centred as a unit on the plot area.
+    arrow_y = ARROW_Y_MM / FIG_HEIGHT_MM
+    group_w = ARROW_SPAN_MM + ARROW_TEXT_GAP_MM + BETTER_TEXT_W_MM
+    head_mm = plot_centre * FIG_WIDTH_MM - group_w / 2
+    fig.add_artist(FancyArrowPatch(
+        ((head_mm + ARROW_SPAN_MM) / FIG_WIDTH_MM, arrow_y),
+        (head_mm / FIG_WIDTH_MM, arrow_y),
+        transform=fig.transFigure, arrowstyle="->", mutation_scale=4,
+        color=TEXT_GRAY, lw=0.8))
+    fig.text((head_mm + ARROW_SPAN_MM + ARROW_TEXT_GAP_MM) / FIG_WIDTH_MM,
+             arrow_y, "better", fontsize=6, color=TEXT_GRAY,
+             ha="left", va="center")
 
     # Keyed legend with explicit symbol descriptions
     legend_handles = [
-        mlines.Line2D([0], [0], marker="o", color="none", markersize=4,
-                      markerfacecolor=DOT_GRAY, markeredgecolor=DOT_GRAY_EDGE,
-                      markeredgewidth=0.4, label="Rank in one dataset"),
-        mlines.Line2D([0], [0], marker="o", color="none", markersize=5,
-                      markerfacecolor="white", markeredgecolor="#202020",
-                      markeredgewidth=0.7, label="Mean rank across datasets"),
-        mlines.Line2D([0], [0], marker="o", color="none", markersize=5.5,
-                      markerfacecolor=ALPHA_RED, markeredgecolor="white",
-                      markeredgewidth=0.6, label="AlphaVariant mean rank"),
+        mlines.Line2D([0], [0], marker="o", color="none",
+                      markersize=DATASET_DOT_PT, markerfacecolor=DOT_GRAY,
+                      markeredgewidth=0, label="Rank in one dataset"),
+        mlines.Line2D([0], [0], marker="o", color="none",
+                      markersize=MEAN_DOT_PT, markerfacecolor="white",
+                      markeredgecolor=MEAN_EDGE, markeredgewidth=0.5,
+                      label="Mean rank across datasets"),
+        mlines.Line2D([0], [0], marker="o", color="none",
+                      markersize=MEAN_DOT_PT, markerfacecolor=ALPHA_RED,
+                      markeredgewidth=0, label="AlphaVariant mean rank"),
     ]
     fig.legend(handles=legend_handles, loc="lower center",
-               bbox_to_anchor=(0.56, -0.02), ncol=3, frameon=False,
-               fontsize=6, handletextpad=0.4, columnspacing=1.0)
+               bbox_to_anchor=(0.5, 0.0), ncol=3, frameon=False,
+               fontsize=5.5, handletextpad=0.4, columnspacing=1.0)
 
-    paths = save_figure(fig, outdir, prefix)
+    # bbox_inches=None keeps the page exactly FIG_WIDTH_MM x FIG_HEIGHT_MM.
+    paths = save_figure(fig, outdir, prefix, bbox_inches=None)
     plt.close(fig)
     return paths
 
 
+# metric key -> (source column, panel title)
 METRIC_COLS = {
-    "max_fitness": ("max_fitness_median", "max fitness"),
-    "top128": ("top128_median", "top-128 mean fitness"),
+    "max_fitness": ("max_fitness_median", "Max fitness"),
+    "top128": ("top128_median", "Top-128 fitness"),
 }
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--metric", choices=list(METRIC_COLS), default="max_fitness",
-                    help="Metric to rank by (default: max_fitness).")
+    ap.add_argument("--group", choices=[c["slug"] for c in GROUPS.values()],
+                    default=None,
+                    help="Benchmark to draw (default: both, one figure each).")
     ap.add_argument("--outdir", default=DEFAULT_FIGDIR,
                     help="Output directory (default: figures/).")
-    ap.add_argument("--prefix", default=None,
-                    help="Output file prefix (default: ranking_panel_<metric>).")
     args = ap.parse_args()
 
-    metric_col, metric_label = METRIC_COLS[args.metric]
-    prefix = args.prefix or f"ranking_panel_{args.metric}"
-
-    tables: Dict[str, pd.DataFrame] = {}
     for group, cfg in GROUPS.items():
+        if args.group and cfg["slug"] != args.group:
+            continue
         if not os.path.exists(cfg["csv"]):
             sys.exit(f"Missing source CSV for {group}: {cfg['csv']}")
-        tables[group] = build_rank_table(cfg, metric_col)
 
-    paths = draw_panel(tables, metric_label, args.outdir, prefix)
+        # One panel per metric; each figure covers a single benchmark.
+        tables: Dict[str, pd.DataFrame] = {
+            title: build_rank_table(cfg, col)
+            for col, title in METRIC_COLS.values()
+        }
+        prefix = f"ranking_panel_{cfg['slug']}"
+        paths = draw_panel(tables, args.outdir, prefix, group_label=group)
 
-    # provenance: write the computed rank table next to the figure
-    csv_path = os.path.join(args.outdir, f"{prefix}_values.csv")
-    pd.concat({g: t for g, t in tables.items()}, names=["group"]).to_csv(csv_path)
-    print(f"Ranked by {metric_label}. Wrote:")
-    for p in paths + [csv_path]:
-        print(f"  {p}")
+        csv_path = os.path.join(args.outdir, f"{prefix}_values.csv")
+        pd.concat(tables, names=["metric"]).to_csv(csv_path)
+        print(f"{group}: wrote")
+        for p in paths + [csv_path]:
+            print(f"  {p}")
 
 
 if __name__ == "__main__":
