@@ -69,7 +69,8 @@ def main():
         ax.hist(fn, bins=80, color=col, alpha=0.85, log=True)
         for x, lab, ls in [(med, "median", ":"), (p99, "p99", "--"),
                            (1.0, "max", "-")]:
-            ax.axvline(x, color="#333", ls=ls, lw=0.5)
+            ax.axvline(x, color="#333", ls=ls, lw=0.5,
+                       label=lab if c == 0 else None)
         ax.set_title(LABELS[d], fontsize=TITLE_FONTSIZE)
         ax.set_xlabel("Normalized fitness", fontsize=XLABEL_FONTSIZE)
         ax.set_xlim(min(0, fn.min()), 1.02)
@@ -78,6 +79,12 @@ def main():
         ax.text(0.96, 0.94, f"N={len(fn):,}\nmedian={med:.3g}\np99={p99:.2f}\n"
                 f">0.5: {frac50*100:.2f}%", transform=ax.transAxes, va="top", ha="right",
                 ma="left", fontsize=BASE_FONTSIZE)
+        if c == 0:
+            # The three marker rules are identical across the top row, so one
+            # legend covers it. Sits under the stats box, over the sparse tail.
+            ax.legend(loc="upper right", bbox_to_anchor=(1.0, 0.60),
+                      frameon=False, fontsize=BASE_FONTSIZE, handlelength=1.5,
+                      handletextpad=0.5, labelspacing=0.25, borderaxespad=0)
         # Decade ticks only; the log minor ticks read as uneven clutter at 6 pt.
         ax.yaxis.set_minor_locator(NullLocator())
         prettify_ax(ax)
