@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Average-method-ranking panel for the AlphaVariant benchmark.
 
-Two side-by-side lollipop panels (four-site, multi-site) showing each method's
-mean rank across that group's datasets. Visual encoding follows
+One single-panel lollipop figure per benchmark x metric (four-site / multi-site
+crossed with max fitness / top-128), showing each method's mean rank across that
+group's datasets. Visual encoding follows
 ``figures/alphavariant_ranking_panel_gray_preferred.py``:
 
 - light-gray dots: a method's rank in each individual dataset,
@@ -15,19 +16,19 @@ CSVs (``figures/alphavariant_comparison_median_iqr.csv`` and
 so the figure stays in sync with the data. Lower rank = better (rank 1 = best
 median on that dataset; ties share the average rank).
 
-Outputs ``<prefix>.pdf`` into ``--outdir`` (default: figures/).
+Outputs ``ranking_panel_<group>_<metric>.pdf`` into ``--outdir``
+(default: figures/), plus a matching ``_values.csv`` of the rank table.
 """
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyArrowPatch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_FIGDIR = os.path.join(ROOT, "figures")
@@ -43,7 +44,6 @@ ALPHA_RED = "#C0392B"   # AlphaVariant mean rank + its tick label
 DOT_GRAY = "#AAAAAA"    # individual dataset ranks
 MEAN_EDGE = "#333333"   # mean rank across datasets (open circle)
 LINE_GRAY = "#D4D4D4"
-TEXT_GRAY = "#444444"
 
 # Marker diameters in points; scatter() takes the area, hence the squares.
 DATASET_DOT_PT = 2.0
@@ -91,21 +91,16 @@ GROUPS = {
     },
 }
 
-# Print size, matching the dot + whisker figures. The text bands are absolute mm
-# so the panels absorb any height change: the top holds the panel titles, the
-# bottom the x tick labels, the x-axis label, the "better" arrow and the legend.
-FIG_WIDTH_MM = 89
-FIG_HEIGHT_MM = 45
-TOP_BAND_MM = 4.4  # benchmark name
-# The bottom band stacks, from the axes down: x tick labels, the per-panel
-# metric name, the "better" arrow, the shared x-axis label and the legend row.
-# Positions are mm from the page bottom, spaced to keep elements clear.
-BOTTOM_BAND_MM = 16.8
-ARROW_Y_MM = 8.6
-XLABEL_Y_MM = 5.9
-ARROW_SPAN_MM = 8.0      # arrow length
-ARROW_TEXT_GAP_MM = 0.8  # arrow tail to "better"
-BETTER_TEXT_W_MM = 5.4   # rendered width of "better" at 6 pt
+# Print size. The text bands are absolute mm so the panel absorbs any height
+# change: the top holds the "<benchmark>, <metric>" caption, the bottom the x
+# tick labels, the x-axis label and the legend.
+FIG_WIDTH_MM = 57
+FIG_HEIGHT_MM = 40
+TOP_BAND_MM = 4.4  # benchmark + metric caption
+# The bottom band stacks, from the axes down: x tick labels, the x-axis label
+# and a two-row legend. At 57 mm the legend cannot run in one row, so it wraps
+# to two columns; the band is sized to that.
+BOTTOM_BAND_MM = 12.4
 
 apply_nature_rcparams()
 
@@ -141,7 +136,7 @@ def build_rank_table(group_cfg: dict, metric_col: str) -> pd.DataFrame:
     return table
 
 
-def _draw_group(ax, table: pd.DataFrame, title: str, n_methods: int) -> None:
+def _draw_group(ax, table: pd.DataFrame, n_methods: int) -> None:
     # reverse so the best mean rank sits at the top
     methods = table.index.tolist()[::-1]
     tp = table.loc[methods]
@@ -168,9 +163,11 @@ def _draw_group(ax, table: pd.DataFrame, title: str, n_methods: int) -> None:
     ax.scatter(mean_rank[is_alpha], y[is_alpha], s=MEAN_DOT_SIZE,
                facecolor=ALPHA_RED, edgecolors="none", linewidth=0, zorder=5)
 
-    # The metric name sits under the panel (above the shared "better" arrow),
-    # leaving the top band for the benchmark name.
-    ax.set_xlabel(title, fontsize=7, fontweight="normal", labelpad=2)
+    # Single panel per figure, so the axis label centres itself on the plot area
+    # and the metric name moves up into the caption. "(1 = best)" carries the
+    # direction that the shared "better" arrow used to.
+    ax.set_xlabel("Mean rank (1 = best)", fontsize=7, fontweight="normal",
+                  labelpad=2)
     ax.set_yticks(y)
     ax.set_yticklabels(tp.index, fontsize=6)
     for lab in ax.get_yticklabels():
@@ -193,52 +190,29 @@ def _draw_group(ax, table: pd.DataFrame, title: str, n_methods: int) -> None:
 
 
 
-def draw_panel(tables: Dict[str, pd.DataFrame], outdir: str, prefix: str,
-               group_label: str = "") -> List[str]:
-    """One figure per benchmark; ``tables`` maps panel title -> rank table."""
+def draw_panel(table: pd.DataFrame, outdir: str, prefix: str,
+               caption: str = "") -> List[str]:
+    """One single-panel figure for a given benchmark x metric rank table."""
     import matplotlib.lines as mlines
 
     fig = plt.figure(figsize=(FIG_WIDTH_MM * MM_TO_IN, FIG_HEIGHT_MM * MM_TO_IN),
                      dpi=600)
-    # Margins in absolute mm. Both the left column and the inter-panel gap have
-    # to hold a column of method names ("MULTIevolve" is the longest).
-    left_mm, right_pad_mm, gap_mm = 15.0, 1.2, 16.2
-    n_panels = len(tables)
+    # Margins in absolute mm; the left column holds the method names
+    # ("MULTIevolve" is the longest).
+    left_mm, right_pad_mm = 15.0, 1.2
     left = left_mm / FIG_WIDTH_MM
     right = 1 - right_pad_mm / FIG_WIDTH_MM
-    axis_width_mm = ((right - left) * FIG_WIDTH_MM - (n_panels - 1) * gap_mm) / n_panels
-    gs = fig.add_gridspec(1, n_panels, left=left, right=right,
+    gs = fig.add_gridspec(1, 1, left=left, right=right,
                           bottom=BOTTOM_BAND_MM / FIG_HEIGHT_MM,
-                          top=1 - TOP_BAND_MM / FIG_HEIGHT_MM,
-                          wspace=gap_mm / axis_width_mm)
-    for gi, (title, table) in enumerate(tables.items()):
-        ax = fig.add_subplot(gs[0, gi])
-        _draw_group(ax, table, title, len(table))
+                          top=1 - TOP_BAND_MM / FIG_HEIGHT_MM)
+    ax = fig.add_subplot(gs[0, 0])
+    _draw_group(ax, table, len(table))
 
-    # Name the benchmark centred at the top: the two files are otherwise
-    # identical in layout and could not be told apart once exported.
-    if group_label:
-        fig.text(0.5, 1 - 0.9 / FIG_HEIGHT_MM, group_label,
+    # Name the benchmark and metric centred at the top: the four files are
+    # otherwise identical in layout and could not be told apart once exported.
+    if caption:
+        fig.text(0.5, 1 - 0.9 / FIG_HEIGHT_MM, caption,
                  fontsize=7, ha="center", va="top")
-
-    # One x-axis label per figure, centred on the plot area (not on the page,
-    # which would sit left of centre because of the method-label column).
-    plot_centre = (left + right) / 2
-    fig.text(plot_centre, XLABEL_Y_MM / FIG_HEIGHT_MM, "Mean rank (1 = best)",
-             fontsize=7, ha="center", va="center")
-    # Directional indicator, drawn once: best rank sits on the left. The
-    # arrow + label pair is centred as a unit on the plot area.
-    arrow_y = ARROW_Y_MM / FIG_HEIGHT_MM
-    group_w = ARROW_SPAN_MM + ARROW_TEXT_GAP_MM + BETTER_TEXT_W_MM
-    head_mm = plot_centre * FIG_WIDTH_MM - group_w / 2
-    fig.add_artist(FancyArrowPatch(
-        ((head_mm + ARROW_SPAN_MM) / FIG_WIDTH_MM, arrow_y),
-        (head_mm / FIG_WIDTH_MM, arrow_y),
-        transform=fig.transFigure, arrowstyle="->", mutation_scale=4,
-        color=TEXT_GRAY, lw=0.8))
-    fig.text((head_mm + ARROW_SPAN_MM + ARROW_TEXT_GAP_MM) / FIG_WIDTH_MM,
-             arrow_y, "better", fontsize=6, color=TEXT_GRAY,
-             ha="left", va="center")
 
     # Keyed legend with explicit symbol descriptions
     legend_handles = [
@@ -253,9 +227,11 @@ def draw_panel(tables: Dict[str, pd.DataFrame], outdir: str, prefix: str,
                       markersize=MEAN_DOT_PT, markerfacecolor=ALPHA_RED,
                       markeredgewidth=0, label="AlphaVariant mean rank"),
     ]
+    # ncol=2 wraps the three keys to two rows; one row would need ~70 mm.
     fig.legend(handles=legend_handles, loc="lower center",
-               bbox_to_anchor=(0.5, 0.0), ncol=3, frameon=False,
-               fontsize=5.5, handletextpad=0.4, columnspacing=1.0)
+               bbox_to_anchor=(0.5, 0.0), ncol=2, frameon=False,
+               fontsize=5.5, handletextpad=0.4, columnspacing=1.0,
+               labelspacing=0.3, borderaxespad=0.2)
 
     # bbox_inches=None keeps the page exactly FIG_WIDTH_MM x FIG_HEIGHT_MM.
     paths = save_figure(fig, outdir, prefix, bbox_inches=None)
@@ -275,7 +251,9 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--group", choices=[c["slug"] for c in GROUPS.values()],
                     default=None,
-                    help="Benchmark to draw (default: both, one figure each).")
+                    help="Benchmark to draw (default: both).")
+    ap.add_argument("--metric", choices=list(METRIC_COLS), default=None,
+                    help="Metric to draw (default: both, one figure each).")
     ap.add_argument("--outdir", default=DEFAULT_FIGDIR,
                     help="Output directory (default: figures/).")
     args = ap.parse_args()
@@ -286,19 +264,20 @@ def main() -> None:
         if not os.path.exists(cfg["csv"]):
             sys.exit(f"Missing source CSV for {group}: {cfg['csv']}")
 
-        # One panel per metric; each figure covers a single benchmark.
-        tables: Dict[str, pd.DataFrame] = {
-            title: build_rank_table(cfg, col)
-            for col, title in METRIC_COLS.values()
-        }
-        prefix = f"ranking_panel_{cfg['slug']}"
-        paths = draw_panel(tables, args.outdir, prefix, group_label=group)
+        # One figure per metric, each covering a single benchmark.
+        for metric, (col, title) in METRIC_COLS.items():
+            if args.metric and metric != args.metric:
+                continue
+            table = build_rank_table(cfg, col)
+            prefix = f"ranking_panel_{cfg['slug']}_{metric}"
+            paths = draw_panel(table, args.outdir, prefix,
+                               caption=f"{group}, {title.lower()}")
 
-        csv_path = os.path.join(args.outdir, f"{prefix}_values.csv")
-        pd.concat(tables, names=["metric"]).to_csv(csv_path)
-        print(f"{group}: wrote")
-        for p in paths + [csv_path]:
-            print(f"  {p}")
+            csv_path = os.path.join(args.outdir, f"{prefix}_values.csv")
+            table.to_csv(csv_path)
+            print(f"{group} / {title}: wrote")
+            for p in paths + [csv_path]:
+                print(f"  {p}")
 
 
 if __name__ == "__main__":

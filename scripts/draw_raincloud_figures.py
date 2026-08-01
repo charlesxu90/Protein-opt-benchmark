@@ -136,19 +136,18 @@ TASKS = {
 }
 
 # Metric to rank/plot by. rank_col must exist in each task's source CSV.
-# fig_w_mm / fig_h_mm set the exact print size (max fitness is the single-column
-# main figure; top-128 is drawn wider for the supplementary layout).
+# fig_w_mm / fig_h_mm set the exact print size, per metric.
 METRIC_CONFIG = {
     "max_fitness": {
         "rank_col": "max_fitness_median",
         "xlabel": "Median max fitness",
-        "fig_w_mm": 89,
+        "fig_w_mm": 117,
         "fig_h_mm": 40,
     },
     "top128": {
         "rank_col": "top128_median",
         "xlabel": "Top-128 fitness",
-        "fig_w_mm": 89,
+        "fig_w_mm": 116,
         "fig_h_mm": 40,
     },
 }
