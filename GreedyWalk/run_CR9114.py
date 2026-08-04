@@ -1,1 +1,0 @@
-/home/xux/Desktop/AlphaVariant/Benchmark/scripts/GreedyWalk/run_CR9114.py
