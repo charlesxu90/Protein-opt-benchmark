@@ -1,1 +1,0 @@
-/home/xux/Desktop/AlphaVariant/Benchmark/scripts/Random/run_AAV_med.py
