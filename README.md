@@ -1,351 +1,481 @@
 # Protein Optimization Benchmark Suite
 
-A comprehensive benchmarking framework for evaluating protein optimization methods on fitness landscape datasets.
+Head-to-head evaluation of 10 protein-optimization / directed-evolution methods
+under a fixed query budget, on two complementary benchmark panels: **four-site
+combinatorially-complete landscapes** (true-fitness pool selection) and
+**multi-site learned-oracle landscapes** (generative proposal against a trained
+CNN oracle).
 
-## Overview
+Every (method, dataset) cell is run for the **same 30 seeds**, so all
+comparisons are paired.
 
-This benchmark suite provides standardized evaluation of directed evolution and protein optimization algorithms. It includes unified metrics computation, data loading utilities, and result aggregation tools to ensure fair comparison across methods.
+---
 
-## Datasets
+## 1. Benchmark panels
 
-| Dataset | Description | Variants | Sequence Length | Task Difficulty |
-|---------|-------------|----------|-----------------|-----------------|
-| **GB1** | IgG-binding domain of protein G, 4-site combinatorial library (positions 39, 40, 41, 54) | 149,361 | 4 aa (56 aa full) | Standard |
-| **AAV Medium** | Adeno-associated virus capsid optimization | TBD | TBD | Medium |
-| **AAV Hard** | AAV capsid with restricted starting conditions | TBD | TBD | Hard |
-| **GFP Medium** | Green fluorescent protein optimization | TBD | TBD | Medium |
-| **GFP Hard** | GFP with restricted starting conditions | TBD | TBD | Hard |
+### Panel A — Four-site, true landscape (pool selection)
 
-### GB1 Dataset Details
+The 20⁴ ≈ 160k variant libraries are (near-)completely measured, so no learned
+oracle is needed: methods select 96 sequences/round × 5 rounds from the real
+library and are scored against the measured fitness.
 
-- **Wild-type sequence**: VDGV (4-site) / MQYKLILNGKTLKGETTTEAVDAATAEKVFKQYANDNGVDGEWTYDDATKTFTVTE (full)
-- **Mutable positions**: V39, D40, G41, V54
-- **Fitness range**: 0.0 - 8.76 (raw) / 0.0 - 1.0 (normalized)
-- **Global maximum**: Fitness = 1.0 (normalized)
+| Dataset | n | Seq len | Sites | Fitness range | Global max |
+|---|---:|---:|---|---|---:|
+| `4site_GB1` | 149,361 | 56 | V39, D40, G41, V54 | 0 – 8.762 | 8.761966 |
+| `4site_PhoQ` | 140,517 | 486 | A284, V285, S288, T289 | 0 – 133.6 | 133.5943 |
+| `4site_TRPB` | 159,129 | 397 | V183, F184, S227, S228 | 0 – 1 (pre-normalized) | 1.0 |
 
-## Methods
+### Panel B — Multi-site, learned oracle (generative proposal)
 
-| Method | Type | Key Features | GB1 | AAV/GFP |
-|--------|------|--------------|-----|---------|
-| **ALDE** | Active Learning | DNN Ensemble, Thompson Sampling, Bayesian optimization | ✓ | - |
-| **EvoPlay** | MCTS + RL | AlphaZero-style Policy-Value Network, Gaussian Process | ✓ | ✓ |
-| **AdaLead** | Active Learning | CNN Ensemble, Adaptive mutation, FLEXS framework | ✓ | ✓ |
-| **LatProtRL** | Reinforcement Learning | PPO, ESM-2 latent space, VED encoder-decoder | ✓ | ✓ |
-| **AICE** | Inverse Folding | ProteinMPNN scoring, Frequency-based filtering, LD matrix | ✓ | ✓ |
-| **δ-Conservative Search** | GFlowNet | Flow-based generation, Delta-conservative radius, UCB | ✓ | ✓ |
-| **AlphaVariant** | Generative | GPT model, REINFORCE training, Ensemble surrogate | ✓ | ✓ |
+Sparse/variable landscapes where exhaustive lookup is impossible. A GGS /
+LatProtRL-style `BaseCNN` oracle is trained on the full dataset and then used as
+the fitness function; methods propose sequences rather than pick table rows.
 
-### Method Configurations (GB1)
+| Dataset | n | Seq len | Varying positions | Fitness range | Oracle test ρ |
+|---|---:|---:|---:|---|---:|
+| `ms_AAV` | 44,128 | 28 | 28 | 0 – 1 | 0.892 |
+| `ms_CreiLOV` | 165,428 | 119 | 15 | 620 – 15,690 | 0.978 |
+| `ms_PAB1` | 36,522 | 75 | 75 | 0.0024 – 2.628 | 0.904 |
 
-All methods use:
-- **Batch size**: 96 sequences per round
-- **Rounds**: 5 (1 initial + 4 iterations)
-- **Total queries**: 480 sequences
-- **Encoding**: One-hot (most methods)
+Oracle checkpoints live in `oracles/<dataset>/oracle.pt` (+ `oracle_meta.json`
+carrying `fit_min` / `fit_max` for de-normalization). Held-out test metrics:
+`figures/ms_oracles/oracle_test_metrics.csv`.
 
-### AlphaVariant Configurations (Plan C — shipped)
+Each dataset directory carries the artifacts its methods need — `wt.fasta`,
+`varying_positions.txt`, a structure (`*.pdb`) for ProteinMPNN/MutCompute,
+`mutcompute.csv`, `aice_mpnn_freq.npz`, `plmc/` (EVmutation couplings),
+`align/` + `prior_aligned.csv` (homolog alignment for the AlphaVariant prior),
+and `embeddings_evolvepro.pt` (frozen ESM-2 embeddings).
+`sha256sum -c data/CHECKSUMS.txt` verifies every shipped `data.csv`.
+
+### Shared protocol
+
+- **Batch size** 96, **rounds** 5 (1 random init + 4 model-guided) → **480 queries**
+- **Seeds** the first 30 entries of `rand_seeds.txt` (621, 100, 383, … 511)
+- Initial round is uniform-random — no fitness leak into initialization
+
+---
+
+## 2. Methods
+
+Ten methods in the headline comparison. `FLEXS` (Panel A) and `AdaLead`
+(Panel B) are the same AdaLead algorithm and are unified under **AdaLead** in
+the figures.
+
+| Method | Family | PLM | RL | Structure | Env |
+|---|---|:-:|:-:|:-:|---|
+| **Random** | Uniform sampling baseline | — | — | — | reuses `ALDE/env` |
+| **GreedyWalk** | Single-mutant hill climbing | — | — | — | reuses `ALDE/env` |
+| **ALDE** | Bayesian active learning (ensemble + Thompson sampling) | — | — | — | `ALDE/env` |
+| **AdaLead** (FLEXS) | Adaptive greedy model-guided search | — | — | — | `FLEXS/env` |
+| **ftMLDE** | Supervised MLDE, CV-selected regressor zoo | optional | — | — | `ftMLDE/env` |
+| **CLADE 2.0** | Cluster-based MLDE (k-means diversity) | optional | — | — | `CLADE/env` |
+| **MULTIevolve** | Supervised + epistasis-aware batch design | optional | — | — | `MULTIevolve/env` |
+| **EVOLVEpro** | Few-shot active learning on frozen ESM-2 embeddings | ESM-2 | — | — | `EVOLVEpro/env` |
+| **AiCE** | Inverse folding + evolutionary frequency filtering | ESM | — | ProteinMPNN | `AiCE/env` |
+| **AlphaVariant** | VariantGPT generative + REINFORCE + surrogate ensemble | VariantGPT | ✓ | MutCompute | `~/miniforge3/envs/alphavariant-env` |
+
+`docs/methods_readme.md` has the full per-method algorithm sketches, failure
+modes and references.
+
+**Current results** (mean rank across each panel's 3 datasets, max fitness —
+`figures/ranking_panel_*_max_fitness_values.csv`):
+
+| | Panel A (four-site) | Panel B (multi-site oracle) |
+|---|---|---|
+| 1 | ALDE / MULTIevolve (2.33) | **AlphaVariant (1.00)** |
+| 2 | AlphaVariant / ftMLDE (3.17) | AdaLead (3.00) |
+| 3 | AdaLead (4.67) | ftMLDE (3.33) |
+| … | CLADE, GreedyWalk, AiCE, EVOLVEpro, Random | GreedyWalk, AiCE, MULTIevolve, CLADE, EVOLVEpro, ALDE, Random |
+
+Paired Wilcoxon tests (Bonferroni-corrected, n=30):
+`figures/wilcoxon_summary.md` (Panel A) and
+`figures/ms_oracles/wilcoxon_summary.md` (Panel B).
+
+---
+
+## 3. Running the benchmark
+
+### Per-method run scripts (the canonical path)
+
+Scripts live in `scripts/<method>/` and are symlinked into the method
+directories. Each method exposes a `run_generic.py` plus thin per-dataset
+wrappers, and writes a full 15-field `metrics_seed<S>.json` per seed.
+
+```bash
+# Four-site panel — run from the method directory using that method's env
+cd ALDE   && env/bin/python run_generic.py --dataset 4site_GB1  --seed 621
+cd ftMLDE && env/bin/python run_generic.py --dataset 4site_PhoQ --seed 621
+cd AiCE   && env/bin/python run_generic.py --dataset 4site_TRPB --seed 621
+
+# 30 seeds from the shared seed file
+cd ALDE && env/bin/python run_generic.py --dataset 4site_GB1 \
+    --seed_file ../rand_seeds.txt --num_seeds 30
+
+# Faster iteration: skip the metric suite
+python run_generic.py --dataset 4site_GB1 --seed 621 --skip_metrics
+```
+
+Shared `run_generic.py` flags: `--dataset`, `--seed` / `--seeds` / `--seed_file`
++ `--num_seeds`, `--device`, `--output_path` (default
+`results/<dataset>_<method>/`), `--data_dir`, `--skip_metrics`.
+
+Results land at `<method>/results/<dataset>_<method>/<dataset>/<variant>/metrics_seed<S>.json`
+(e.g. `ALDE/results/4site_GB1_ALDE/4site_GB1/onehot/`, `AiCE/.../aice/`,
+`ftMLDE/.../ftmlde/`, `CLADE/.../clade/`, `EVOLVEpro/.../topn/`).
+
+### Unified panel drivers
+
+Two drivers implement all baselines in one process with **identical selection
+rules across both panels**, so `ALDE`/`CLADE`/`ftMLDE` mean the same thing in
+Panel A and Panel B. They emit the compact headline schema
+(`max_fitness_norm`, `top128_mean_norm`, `diversity_top128`,
+`novelty_top128_vs_wt`, `fitness_trajectory`, …).
+
+```bash
+# Panel B — learned oracle (Random, GreedyWalk, ftMLDE, CLADE, ALDE,
+#           AdaLead, MULTIevolve, EVOLVEpro, AiCE)
+ALDE/env/bin/python scripts/run_oracle_benchmark.py \
+    --method ALDE --dataset ms_CreiLOV --seeds 621 100 383 --device cuda:0
+
+# Panel A — true landscape, CPU-only (Random, GreedyWalk, ftMLDE, CLADE, ALDE)
+python scripts/run_4site_benchmark.py --method ftMLDE --dataset 4site_GB1 --seeds 621 100
+```
+
+Panel B output: `results_oracle/<dataset>/<method>/seed<S>.json`.
+
+### AlphaVariant (Plan C — shipped)
 
 AlphaVariant ships the **Plan C** configuration: base GPT-REINFORCE + surrogate
 ensemble with **MutCompute** (structure-based zero-shot) reward shaping and
-**SHAP**-based per-position alphabet pruning. The flags differ slightly between
-the two benchmark families. Run from the `alphavariant/` method directory.
+**SHAP** per-position alphabet pruning. Flags differ between the two panels.
+Run from `alphavariant/`.
 
-> **Environment**: AlphaVariant requires the env's `libstdc++` on the path, otherwise
-> matplotlib/torch fail with a `CXXABI` error:
+> **Environment**: put the env's `libstdc++` on the path or matplotlib/torch
+> fail with a `CXXABI` error:
 > ```bash
 > export LD_LIBRARY_PATH=/home/xux/miniforge3/envs/alphavariant-env/lib:$LD_LIBRARY_PATH
 > ```
 
-**Four-site combinatorial benchmark** (`4site_GB1`, `4site_PhoQ`, `4site_TEV`, `4site_TRPB`)
-— lookup-table landscape:
+**Panel A** (`4site_GB1`, `4site_PhoQ`, `4site_TRPB`) — lookup-table landscape:
 
 ```bash
-python run_generic.py --dataset 4site_PhoQ --seed 42 \
+python run_generic.py --dataset 4site_PhoQ --seed 621 \
     --use_mutcompute --plm_reward_lambda 0.5 --shap_prune_alphabet
 ```
 
-**Multi-site learned-oracle benchmark** (`ms_AAV`, `ms_CreiLOV`, `ms_GFP`, `ms_PAB1`)
-— GGS/LatProtRL-style CNN oracle landscape, generative proposal over varying positions:
+**Panel B** (`ms_AAV`, `ms_CreiLOV`, `ms_PAB1`) — CNN oracle landscape,
+generative proposal over the varying positions:
 
 ```bash
-python run_generic.py --dataset ms_GFP --seed 42 \
+python run_generic.py --dataset ms_CreiLOV --seed 621 \
     --oracle --level uniform \
-    --prior_model_path priors/ms_GFP/prior_model.pt \
+    --prior_model_path priors/ms_CreiLOV/prior_model.pt \
     --features ev_onehot --use_mutcompute --shap_prune_alphabet \
     --max_n_mut 2 \
     --n_rounds 5 --n_steps_per_round 500 --device cuda:0 \
     --data_dir ../data
 ```
 
-| Flag | Four-site | Multi-site | Role |
-|------|:---------:|:----------:|------|
-| `--features ev_onehot` | — | ✓ | Add EVmutation/plmc statistical-energy column to the aa+one-hot surrogate features (four-site uses aa+one-hot only) |
-| `--use_mutcompute` | ✓ | ✓* | MutCompute zero-shot scorer; *consumed only on four-site (reward shaping). Inert on multi-site (no consumer enabled) |
-| `--plm_reward_lambda 0.5` | ✓ | — | Blend MutCompute z-score into the REINFORCE reward (λ decays over rounds) |
-| `--shap_prune_alphabet` | ✓ | ✓ | SHAP per-position alphabet pruning (proposal filtering gated to oracle mode) |
-| `--max_n_mut 2` | — | ✓ | Cap generated variants to ≤ 2 mutations from the reference |
+| Flag | Panel A | Panel B | Role |
+|---|:-:|:-:|---|
+| `--features ev_onehot` | — | ✓ | Add the EVmutation/plmc statistical-energy column to the aa+one-hot surrogate features (Panel A uses aa+one-hot only) |
+| `--use_mutcompute` | ✓ | ✓* | MutCompute zero-shot scorer; *consumed only on Panel A (reward shaping). Inert on Panel B (no consumer enabled) |
+| `--plm_reward_lambda 0.5` | ✓ | — | Blend the MutCompute z-score into the REINFORCE reward (λ decays over rounds) |
+| `--shap_prune_alphabet` | ✓ | ✓ | SHAP per-position alphabet pruning; the pruned alphabet is propagated into the GPT hotspot config so later rounds sample the pruned subspace |
+| `--max_n_mut 2` | — | ✓ | Cap generated variants at ≤ 2 mutations from the reference |
 | `--oracle --prior_model_path …` | — | ✓ | Score via the trained CNN oracle; GPT prior from aligned homologs |
 | `--level uniform` | ✓ | ✓ | Uniform initial sampling (no fitness leak) |
 
-Shared defaults (both families): `--batch_size 96 --n_rounds 5 --n_steps_per_round 500 --sigma 60`,
-five-model surrogate ensemble (`--surrogate ensemble`), cluster-based sampling (`--sampling cluster`).
-Multi-site priors are trained per dataset via `scripts/alphavariant/train_ms_prior.py` and
-saved to `alphavariant/priors/<dataset>/prior_model.{pt,json}`. Sweep launchers:
-`scripts/alphavariant/run_ev_onehot.sh` / `scripts/alphavariant/_run_30seed_evonehot.sh` (multi-site, ev+onehot).
+Shared defaults (both panels): `--batch_size 96 --n_rounds 5
+--n_steps_per_round 500 --sigma 60`, five-model surrogate ensemble
+(`--surrogate ensemble`), cluster-based sampling (`--sampling cluster`),
+Thompson acquisition (`--acquisition ts`).
 
-## Metrics
+Panel B priors are trained per dataset with
+`scripts/alphavariant/train_ms_prior.py` → `alphavariant/priors/<dataset>/prior_model.{pt,json}`.
+Sweep launchers: `scripts/alphavariant/run_ev_onehot.sh` and
+`_run_30seed_evonehot.sh` (Panel B), `_rerun_4site_newcode.sh` (Panel A).
 
-All metrics are computed consistently across methods using the unified `utils/` module.
+Shipped results: `alphavariant/results/<dataset>_AlphaVariant_mc_shap_winner/seed_*/metrics.json`
+(Panel A) and `results_oracle/<dataset>/AlphaVariant/seed*.json` (Panel B).
+
+### Training the pieces from scratch
+
+```bash
+# Multi-site fitness oracle (BaseCNN, one-hot, MSE, Adam 1e-4, ≤100 epochs)
+python scripts/train_oracle.py --dataset ms_CreiLOV --smoke        # cheap pipeline check
+python scripts/train_oracle.py --dataset ms_CreiLOV --device cuda:0
+
+# AlphaVariant homolog prior
+python scripts/alphavariant/train_ms_prior.py --dataset ms_CreiLOV --device cuda:0
+
+# ProteinMPNN residue frequencies for AiCE
+CUDA_VISIBLE_DEVICES=0 AiCE/env/bin/python scripts/compute_mpnn_freqs.py --dataset ms_CreiLOV
+
+# ESM-2 embeddings for EVOLVEpro
+python scripts/EVOLVEpro/embed_dataset.py --dataset 4site_GB1
+```
+
+---
+
+## 4. Metrics
+
+Two levels of metric reporting coexist by design.
+
+**Headline metrics** (both panel drivers, and what the figures rank on):
+`max_fitness_norm`, `top128_mean_norm`, `mean_all_norm`, `diversity_top128`,
+`novelty_top128_vs_wt`, `best_n_muts`, `fitness_trajectory` (per-round best).
+
+**Full 15-field suite** (`utils/metrics.py`, emitted by every per-method
+`run_generic.py`):
 
 | Metric | Description | Reference | Range |
-|--------|-------------|-----------|-------|
-| **High-Fitness Proximity (d_high)** | Median min distance from generated sequences to top 10% fitness sequences | LatProtRL | 0+ (lower is better) |
-| **Novelty (d_init)** | Median min distance to initial training set | LatProtRL | 0+ (higher is better) |
-| **Batch Diversity** | Median pairwise Hamming distance within generated batch | Energy Matching | 0+ (higher is better) |
-| **Normalized Fitness (Top-128)** | Median fitness of top 128 sequences, normalized to [0,1] | GGS | [0, 1] |
-| **Normalized Fitness (Top-256)** | Median fitness of top 256 sequences, normalized to [0,1] | GGS | [0, 1] |
-| **Max Fitness** | Absolute highest fitness discovered | δ-CS | [0, 1] |
-| **Spearman Correlation (ρ)** | Rank correlation between predicted and true fitness | μProtein | [-1, 1] |
-| **Epistatic Correlation** | Spearman correlation of non-additive mutational effects | μProtein | [-1, 1] |
-| **Recall of High-Order Mutants** | % of true top multi-point mutants correctly identified | μProtein | [0, 1] |
-| **Simple Regret (r_t)** | Gap between global optimum and best found at round t | VSD | 0+ (lower is better) |
-| **Global Max Hit Count** | Number of runs finding the global maximum (GB1 only) | EvoPlay | Count |
-| **Miscalibration Area** | Area between calibration curve and ideal diagonal | ALDE | [0, 1] |
-| **Expected Calibration Error** | Weighted average of calibration errors | ALDE | [0, 1] |
+|---|---|---|---|
+| High-Fitness Proximity (`high_fitness_proximity`) | Median min distance from generated sequences to the top-10% fitness set | LatProtRL | 0+ (lower better) |
+| Novelty (`novelty`) | Median min distance to the initial training set | LatProtRL | 0+ (higher better) |
+| Batch Diversity (`batch_diversity`) | Median pairwise distance within the generated batch | Energy Matching | 0+ (higher better) |
+| Normalized Fitness Top-128 / Top-256 | Median fitness of the top 128 / 256 queried, normalized to [0,1] | GGS | [0, 1] |
+| Max Fitness (`max_fitness`) | Highest fitness discovered (normalized) | δ-CS | [0, 1] |
+| Spearman Correlation | Rank correlation, surrogate prediction vs. true fitness | µProtein | [-1, 1] |
+| Epistatic Correlation | Spearman correlation of non-additive mutational effects | µProtein | [-1, 1] |
+| Recall of High-Order Mutants | Fraction of true top multi-point mutants recovered | µProtein | [0, 1] |
+| Simple Regret | Gap between global optimum and best found | VSD | 0+ (lower better) |
+| Global Max Found (`global_max_found`) | Whether the run hit the global optimum | EvoPlay | bool / count |
+| Miscalibration Area | Area between the calibration curve and the ideal diagonal | ALDE | [0, 1] |
+| Expected Calibration Error | Weighted average of calibration errors | ALDE | [0, 1] |
+| AUOC (`auoc`) | Area under the optimization curve | — | [0, 1] |
+| Hit Rate | Fraction of queries above a fitness threshold | — | [0, 1] |
 
-## Project Structure
+Distance functions: `levenshtein` (default; variable-length safe) or `hamming`
+(equal-length only).
+
+---
+
+## 5. Analysis pipeline
+
+```bash
+# --- aggregate per-seed JSON -> tidy median/IQR CSVs -------------------------
+python scripts/aggregate_oracle_results.py                # results_oracle/ -> figures/ms_oracles/
+python scripts/build_oracle_median_iqr_csv.py             # multisite_oracle_median_iqr.csv
+python scripts/build_median_iqr_csv.py --plans C          # four-site, per AlphaVariant plan
+
+# single-dataset / single-seed cross-method metric dump (all 15 fields)
+python scripts/aggregate_metrics.py --dataset 4site_GB1 --seed 621
+
+# --- significance -----------------------------------------------------------
+python scripts/compute_oracle_wilcoxon.py --task multisite   # figures/ms_oracles/wilcoxon_*
+python scripts/compute_oracle_wilcoxon.py --task 4site       # figures/wilcoxon_*
+python scripts/compute_planC_wilcoxon.py                     # AlphaVariant vs its ablations
+
+# --- figures ----------------------------------------------------------------
+python scripts/draw_ranking_panel.py                      # mean-rank lollipop panels
+python scripts/draw_raincloud_figures.py                  # per-seed dot + IQR rows
+python scripts/draw_trajectory_figures.py --task multisite # per-round improvement bands
+python scripts/plot_oracle_diagnostics.py                 # oracle calibration (supplementary)
+python scripts/plot_4site_density.py                      # landscape-difficulty diagnostic
+python scripts/draw_supplementary_ablation.py             # AlphaVariant ablation bars
+
+# --- ablation ---------------------------------------------------------------
+python scripts/summarize_ablation.py                      # docs/ablation_summary.csv
+```
+
+Figure style is centralized in `utils/plot_style_utils.py`
+(`apply_nature_rcparams`, `save_figure`).
+
+AlphaVariant leave-one-out ablations live in `results_ablation/<prefix>_<config>/`.
+Panel A configs: `full` (Plan C), `no_mcreward`, `no_shap`, `bare`.
+Panel B configs: `full`, `no_ev`, `no_shap`, `no_cap`, `no_prior`.
+
+---
+
+## 6. Repository layout
 
 ```
 Benchmark/
-├── README.md                 # This file
-├── INTEGRATION.md            # Integration guide for methods
-├── Prompts.md                # Task prompts
-├── rand_seeds.txt            # 500 random seeds for reproducibility
+├── README.md  CLAUDE.md  AGENTS.md  INTEGRATION.md
+├── rand_seeds.txt                  # 500 seeds; the benchmark uses the first 30
 │
-├── utils/                    # Unified benchmark utilities
-│   ├── __init__.py           # Package exports
-│   ├── metrics.py            # Core metric implementations
-│   ├── data.py               # Data loading utilities
-│   ├── evaluator.py          # BenchmarkEvaluator class
-│   ├── io.py                 # Results I/O and aggregation
-│   ├── gb1.py                # GB1-specific utilities
-│   └── compat.py             # Drop-in compatibility for ALDE interface
+├── utils/                          # unified benchmark library
+│   ├── metrics.py                  # 15-field metric suite
+│   ├── data.py                     # dataset loading, FitnessLandscape (O(1) lookup)
+│   ├── compat.py                   # ALDE-style drop-in interface
+│   ├── evaluator.py                # BenchmarkEvaluator
+│   ├── gb1.py                      # GB1 constants/helpers (GB1_WILD_TYPE_4SITE = "VDGV")
+│   ├── io.py                       # results save/load/aggregate/export
+│   ├── oracle_model.py             # BaseCNN + ALPHABET
+│   ├── oracle_landscape.py         # OracleLandscape (Panel B fitness function)
+│   ├── candidate_generator.py      # mutation/proposal pool for Panel B
+│   ├── proteingym_oracle.py        # generic ProteinGym/CombinGym oracle wrapper
+│   ├── sequence_plausibility.py    # ESM-2 pseudo-perplexity plausibility
+│   ├── seed_values.py              # single source of truth for per-seed result paths
+│   └── plot_style_utils.py         # figure rcParams + save helpers
 │
-├── data/                     # Benchmark datasets
-│   └── GB1/
-│       └── data.csv          # GB1 fitness landscape
+├── data/<dataset>/                 # data.csv + wt.fasta + per-method artifacts
+├── oracles/<ms_dataset>/           # trained BaseCNN oracle.pt + oracle_meta.json
 │
-├── ALDE/                     # ALDE implementation
-│   ├── run_GB1.py
-│   └── src/
+├── scripts/                        # ALL git-tracked code
+│   ├── run_oracle_benchmark.py     # Panel B driver (9 baselines)
+│   ├── run_4site_benchmark.py      # Panel A driver (5 baselines)
+│   ├── train_oracle.py             # oracle training
+│   ├── prepare_combingym.py        # CombinGym dataset import
+│   ├── prepare_proteingym.py       # ProteinGym dataset import
+│   ├── compute_mpnn_freqs.py  compute_dataset_checksums.py  compute_landscape_descriptors.py
+│   ├── aggregate_*.py  build_*_median_iqr_csv.py  compute_*_wilcoxon.py
+│   ├── draw_*.py  plot_*.py  generate_tables.py  summarize_ablation.py
+│   ├── add_script_link.sh          # refresh symlinks into method dirs
+│   ├── setup_baseline_envs.sh      # build EVOLVEpro/ftMLDE/MULTIevolve envs
+│   └── <Method>/                   # run_generic.py + per-dataset wrappers
 │
-├── EvoPlay/                  # EvoPlay implementation
-│   ├── run_GB1.py
-│   └── code/
+├── ALDE/ AiCE/ FLEXS/ CLADE/ ftMLDE/ EVOLVEpro/ MULTIevolve/
+├── Random/ GreedyWalk/ alphavariant/     # method repos (git-ignored)
+│       └── env/  results/  <symlinked run scripts>
 │
-├── FLEXS/                    # AdaLead implementation (FLEXS framework)
-│   ├── run_GB1_adalead.py
-│   └── flexs/
-│
-├── LatProtRL/                # LatProtRL implementation
-│   ├── run_GB1.py
-│   └── net/
-│
-├── AiCE/                     # AICE implementation
-│   ├── run_GB1.py
-│   └── scripts/
-│
-├── delta_cs/                 # δ-Conservative Search implementation
-│   └── BioSeq-GFN-AL/
-│       ├── run_GB1.py
-│       └── lib/
-│
-└── alphavariant/             # AlphaVariant implementation
-    ├── run_GB1.py
-    └── popgen/
+├── results_oracle/                 # Panel B per-seed JSON
+├── results_ablation/               # AlphaVariant leave-one-out ablations
+├── figures/  tables/  docs/        # analysis outputs + manuscript material
+└── logs/  sweep_logs/  results_backups/
 ```
 
-## Quick Start
+### Symlink system (important)
 
-### Using Unified Utilities
+Run scripts are git-tracked in `scripts/<method>/` and symlinked into the
+git-ignored method directories. **Always edit `scripts/<method>/…`, never the
+copy inside a method directory.**
+
+```bash
+./scripts/add_script_link.sh        # refresh every symlink
+```
+
+Always *invoke* the symlinked copy from inside the method directory, never
+`scripts/<method>/run_generic.py` directly: the scripts resolve `data_dir` as
+`dirname(__file__)/../data` and `--output_path` relative to the cwd, so running
+from `scripts/` looks for `scripts/data/`.
+
+### Environments
+
+One conda env per method (Python versions differ):
+
+| Method | Env |
+|---|---|
+| ALDE, AiCE, FLEXS, CLADE, ftMLDE, EVOLVEpro, MULTIevolve | `<method>/env` |
+| Random, GreedyWalk | reuse `ALDE/env` (pure Python, no GPU) |
+| AlphaVariant | `/home/xux/miniforge3/envs/alphavariant-env` |
+
+`scripts/setup_baseline_envs.sh` builds the three later additions
+(`EVOLVEpro`, `ftMLDE`, `MULTIevolve`) from their upstream `environment.yml`
+into `<method>/env/`; the older envs were built by hand from each
+`scripts/<method>/Environment.md`.
+
+`scripts/run_oracle_benchmark.py` needs only `ALDE/env` (sklearn + torch), except
+for `--method EVOLVEpro`, which needs the transformers/ESM stack from
+`alphavariant-env`.
+
+---
+
+## 7. Using `utils/` directly
 
 ```python
 import sys
-sys.path.insert(0, '/path/to/Benchmark')
+sys.path.insert(0, '/home/xux/Desktop/AlphaVariant/Benchmark')
 
-# Option 1: Use GB1-specific utilities
-from utils import (
-    load_gb1_landscape,
-    compute_gb1_metrics,
-    print_gb1_metrics_summary,
-)
-
-sequences, fitness, wildtype = load_gb1_landscape('/path/to/data')
-metrics = compute_gb1_metrics(
-    queried_sequences=my_sequences,
-    queried_fitness=my_fitness,
-    all_sequences=sequences,
-    all_fitness=fitness,
-    initial_sequences=init_seqs,
-)
-print_gb1_metrics_summary(metrics)
-
-# Option 2: Use compatibility layer (drop-in for ALDE interface)
-from utils.compat import (
-    compute_all_metrics,
-    load_landscape_data,
-    MetricsResult,
-)
-```
-
-### Running Experiments
-
-```bash
-# Single run with specific seed
-python run_GB1.py --seed 42
-
-# Multiple runs for statistical evaluation
-python run_GB1.py --seeds 42 123 456 789 1000
-
-# Use predefined seeds from file
-python run_GB1.py --seed_file ../rand_seeds.txt --num_seeds 10
-
-# Skip metrics computation (faster, for debugging)
-python run_GB1.py --seed 42 --skip_metrics
-```
-
-## Installation
-
-### Requirements
-
-```
-numpy>=1.20
-scipy>=1.7
-pandas>=1.3
-torch>=1.9  # For neural network methods
-```
-
-### Optional Dependencies
-
-```
-scikit-learn>=1.0  # For ensemble models
-wandb              # For experiment tracking
-```
-
-## TODOs
-
-### High Priority
-
-- [ ] Implement AAV/GFP medium benchmark dataset
-- [ ] Implement AAV/GFP hard benchmark dataset
-- [ ] Add cross-method comparison scripts
-- [ ] Create visualization utilities for trajectories
-
-### Methods
-
-- [ ] Validate EvoPlay integration with unified utils
-- [ ] Validate AdaLead integration with unified utils
-- [ ] Validate LatProtRL integration with unified utils
-- [ ] Validate AICE integration with unified utils
-- [ ] Validate δ-Conservative Search integration with unified utils
-- [ ] Validate AlphaVariant integration with unified utils
-
-### Metrics & Analysis
-
-- [ ] Add per-round metric tracking visualization
-- [ ] Implement statistical significance tests (Wilcoxon, bootstrap)
-- [ ] Add convergence analysis utilities
-- [ ] Create LaTeX table export for papers
-
-### Documentation
-
-- [ ] Add detailed API documentation
-- [ ] Create Jupyter notebook tutorials
-- [ ] Add troubleshooting guide
-- [ ] Document hyperparameter sensitivity
-
-### Infrastructure
-
-- [ ] Add CI/CD pipeline for testing
-- [ ] Create Docker container for reproducibility
-- [ ] Add multi-GPU support for large-scale experiments
-- [ ] Implement checkpoint/resume functionality
-
-## Usage Examples
-
-### Computing Metrics for a Run
-
-```python
-from utils.compat import compute_all_metrics, load_landscape_data
+# --- Panel A: true landscape, full metric suite ---------------------------
 import numpy as np
+from utils.compat import compute_all_metrics, load_landscape_data
 
-# Load landscape
-sequences, fitness = load_landscape_data('GB1', data_dir='./data')
-fitness = fitness / np.max(fitness)  # Normalize
+sequences, fitness = load_landscape_data('4site_GB1', data_dir='./data')
+fitness = fitness / fitness.max()
 
-# Your optimization results
-queried_indices = np.array([...])  # Indices of queried sequences
-initial_indices = np.array([...])  # Indices of initial samples
-
-# Compute metrics
 metrics = compute_all_metrics(
-    queried_indices=queried_indices,
+    queried_indices=queried_indices,      # np.ndarray of landscape indices
     all_sequences=sequences,
     all_fitness=fitness,
     initial_indices=initial_indices,
     wildtype='VDGV',
-    batch_size=96
+    batch_size=96,
 )
+print(f"max fitness  {metrics.max_fitness:.4f}")
+print(f"simple regret {metrics.simple_regret:.4f}")
 
-print(f"Max Fitness: {metrics.max_fitness:.4f}")
-print(f"Simple Regret: {metrics.simple_regret:.4f}")
-```
+# --- Panel B: learned-oracle landscape -----------------------------------
+from utils.oracle_landscape import OracleLandscape
 
-### Aggregating Multiple Runs
+landscape = OracleLandscape('ms_CreiLOV', oracle_dir='./oracles',
+                            data_dir='./data', device='cuda:0')
+raw  = landscape.get_fitness(candidate_sequences)             # de-normalized units
+norm = landscape.get_fitness_normalized(candidate_sequences)  # [0, 1]
+print(landscape.n_calls)   # oracle-call counter — must not exceed 480
 
-```python
+# --- Aggregating seeds ---------------------------------------------------
 from utils.compat import aggregate_run_metrics, global_max_hit_count
 
-# Collect results from multiple runs
-all_results = [metrics_run1, metrics_run2, ...]
+agg = aggregate_run_metrics([m1, m2, ...])
+print(f"{agg['max_fitness']['mean']:.4f} ± {agg['max_fitness']['std']:.4f}")
 
-# Aggregate statistics
-aggregated = aggregate_run_metrics(all_results)
-
-print(f"Max Fitness: {aggregated['max_fitness']['mean']:.4f} ± {aggregated['max_fitness']['std']:.4f}")
-
-# Global max hit rate
-hit_count, hit_rate = global_max_hit_count(
-    [r.max_fitness for r in all_results],
-    global_max=1.0,
-    tolerance=0.01
-)
-print(f"Global Max Hit Rate: {hit_rate*100:.1f}% ({hit_count}/{len(all_results)})")
+hits, rate = global_max_hit_count([r.max_fitness for r in runs],
+                                 global_max=1.0, tolerance=0.01)
 ```
 
-## References
+---
 
-- **ALDE**: Active Learning for Directed Evolution
-- **EvoPlay**: AlphaZero-inspired protein evolution
-- **LatProtRL**: Reinforcement Learning in Latent Space
-- **AICE**: AI-guided Combinatorial Editing
-- **δ-Conservative Search**: GFlowNet with conservative radius
-- **AlphaVariant**: GPT-based generative optimization
-- **GGS**: Normalized fitness metrics
-- **μProtein**: Model quality metrics
-- **VSD**: Variational Search Distribution
+## 8. Requirements
 
-## License
-
-[Add license information]
-
-## Citation
-
-```bibtex
-@misc{proteinbenchmark2024,
-  title={Protein Optimization Benchmark Suite},
-  author={...},
-  year={2024},
-  url={...}
-}
 ```
+numpy>=1.20   scipy>=1.7   pandas>=1.3   torch>=1.9
+scikit-learn>=1.0          # surrogate ensembles (ftMLDE/CLADE/ALDE/AlphaVariant)
+matplotlib                 # figures
+shap                       # AlphaVariant alphabet pruning
+transformers / fair-esm    # EVOLVEpro, AiCE, AlphaVariant PLM paths
+```
+
+Per-method pins are in each `scripts/<method>/Environment.md` /
+`environment.yml`; do not mix envs.
+
+---
+
+## 9. Legacy artifacts
+
+The tree retains material from earlier benchmark revisions. Do not treat it as
+current:
+
+- `scripts/<method>/run_AAV_hard.py`, `run_CreiLOV.py`, `run_PAB1.py`,
+  `run_TRPB.py` target dataset directories (`AAV_hard`, `CreiLOV`, `PAB1`,
+  `TRPB`) that no longer exist under `data/`; the current equivalents are
+  `ms_AAV`, `ms_CreiLOV`, `ms_PAB1`, `4site_TRPB`.
+- `4site_TEV` and `ms_GFP` were dropped from the headline panels. Rows for them
+  survive in `figures/*median_iqr.csv`, `results_oracle/ms_GFP/`,
+  `oracles/ms_GFP/` and `docs/ablation_summary.csv`, but the ranking panels and
+  Wilcoxon tables cover 3 datasets per panel.
+- `data/README.md` and `tables/_all_datasets_summary.md` describe the older,
+  wider dataset/method panel (CombinGym multi-objective sets, `delta_cs`,
+  `EvoPlay`, `LatProtRL`, `Mu-Protein`).
+- `scripts/run_sweep_parallel.py` and `scripts/run_30seed_gb1_sweep.sh` call a
+  `scripts/hpc/launch.py` that is no longer in the tree; the live sweep
+  launchers are the per-method shell scripts under `scripts/alphavariant/` and
+  direct driver invocations.
+- `scripts/generate_tables.py` and `scripts/plotting/` are hard-coded to the
+  old dataset names (`GB1`, `AAV_med`, `GFP_med`, `GFP_hard`) and will not find
+  current results. Use the `build_*_median_iqr_csv.py` → `draw_*.py` chain in §5
+  instead.
+
+---
+
+## 10. References
+
+| | |
+|---|---|
+| ALDE | Yang *et al.*, active learning for directed evolution |
+| AdaLead / FLEXS | Sinai *et al.* 2020, FLEXS benchmark framework |
+| ftMLDE | Wittmann *et al.* 2021, focused training MLDE |
+| CLADE 2.0 | Qiu & Wei, cluster-learning-assisted directed evolution |
+| EVOLVEpro | Jiang *et al.*, few-shot PLM-guided protein evolution |
+| MULTI-evolve | Multi-mutation epistasis-aware batch design |
+| AiCE | Inverse-folding (ProteinMPNN) guided combinatorial editing |
+| AlphaVariant | VariantGPT generative optimization + REINFORCE |
+| GGS | Kirjner *et al.* 2024, smoothed-landscape oracle protocol + normalized fitness metrics |
+| LatProtRL | Latent-space RL; proximity / novelty metrics |
+| µProtein | Model-quality metrics (Spearman, epistatic, high-order recall) |
+| VSD | Variational search distribution; simple regret |
+| Datasets | GB1: Wu *et al.* 2016 · PhoQ: Podgornaia & Laub 2015 · TrpB: Johnston *et al.* 2024 · AAV: Bryant *et al.* 2021 · CreiLOV: Chen *et al.* 2023 · PAB1: Melamed *et al.* 2013 |
+
+Full citations: `docs/methods_readme.md` §5.
