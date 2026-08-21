@@ -1,1 +1,0 @@
-/home/xux/Desktop/AlphaVariant/Benchmark/scripts/AiCE/scripts/03.caculated_sca.sh

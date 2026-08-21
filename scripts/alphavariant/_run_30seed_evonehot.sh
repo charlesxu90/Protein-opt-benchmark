@@ -25,7 +25,7 @@ run_job() {  # $1=dataset $2=seed $3=gpu
     local d="$1" seed="$2" gpu="$3"
     local out="$RES/$d/AlphaVariant/seed${seed}.json"
     if [ -f "$out" ]; then echo "[skip] $d seed$seed (done)"; return; fi
-    CUDA_VISIBLE_DEVICES="$gpu" $PY run_generic.py \
+    CUDA_VISIBLE_DEVICES="$gpu" $PY ../scripts/alphavariant/run_generic.py \
         --dataset "$d" --seed "$seed" --oracle --level uniform \
         --prior_model_path "priors/$d/prior_model.pt" \
         --features ev_onehot --use_mutcompute --shap_prune_alphabet \

@@ -14,8 +14,8 @@ This wrapper:
   4. Translates EVOLVEpro's per-round results dataframe into our standard
      metrics_seed*.json format (max_fitness, etc.).
 
-Run via the symlinked per-dataset wrappers (run_4site_GB1.py …) under
-EVOLVEpro/ so `__file__/..` correctly resolves to BENCHMARK_ROOT.
+Run from anywhere; BENCHMARK_ROOT is discovered by walking up from this file:
+    EVOLVEpro/env/bin/python scripts/EVOLVEpro/run_generic.py --dataset 4site_GB1 --seed 621
 """
 from __future__ import annotations
 import argparse

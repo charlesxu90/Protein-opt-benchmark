@@ -26,7 +26,7 @@ run_job() {  # $1=dataset $2=seed $3=gpu
     local d="$1" seed="$2" gpu="$3"
     local out="$OUTBASE/${d}_AlphaVariant/seed_${seed}/metrics.json"
     if [ -f "$out" ]; then echo "[skip] $d seed$seed"; return; fi
-    CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY run_generic.py \
+    CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY ../scripts/alphavariant/run_generic.py \
         --dataset "$d" --seed "$seed" \
         --output_path "$OUTBASE/${d}_AlphaVariant" \
         > "$LOGD/${d}_seed${seed}.log" 2>&1

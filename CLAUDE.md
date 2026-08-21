@@ -91,26 +91,29 @@ This applies recursively. If a subtask itself is long, decompose it further.
 
 ### Per-method run scripts (the canonical path)
 
-Each method exposes `run_generic.py` plus thin per-dataset wrappers, symlinked into its method directory. Invoke with that method's env python, **from inside the method directory**.
+Each method exposes `run_generic.py` plus thin per-dataset wrappers, living **only** in `scripts/<method>/`. Invoke them there with that method's env python; the working directory does not matter.
 
 ```bash
-cd ALDE   && env/bin/python run_generic.py --dataset 4site_GB1  --seed 621
-cd ftMLDE && env/bin/python run_generic.py --dataset 4site_PhoQ --seed 621
-cd AiCE   && env/bin/python run_generic.py --dataset 4site_TRPB --seed 621
+ALDE/env/bin/python   scripts/ALDE/run_generic.py   --dataset 4site_GB1  --seed 621
+ftMLDE/env/bin/python scripts/ftMLDE/run_generic.py --dataset 4site_PhoQ --seed 621
+AiCE/env/bin/python   scripts/AiCE/run_generic.py   --dataset 4site_TRPB --seed 621
 
 # Multiple seeds
-env/bin/python run_generic.py --dataset 4site_GB1 --seeds 621 100 383
-env/bin/python run_generic.py --dataset 4site_GB1 --seed_file ../rand_seeds.txt --num_seeds 30
+ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seeds 621 100 383
+ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed_file rand_seeds.txt --num_seeds 30
+
+# Per-dataset wrapper (just injects --dataset)
+ALDE/env/bin/python scripts/ALDE/run_4site_GB1.py --seed 621
 
 # Skip metrics (faster iteration)
-env/bin/python run_generic.py --dataset 4site_GB1 --seed 621 --skip_metrics
+ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed 621 --skip_metrics
 ```
 
-Shared flags: `--dataset`, `--seed` / `--seeds` / `--seed_file` + `--num_seeds`, `--device`, `--output_path` (default `results/<dataset>_<method>/`), `--data_dir`, `--skip_metrics`.
+Shared flags: `--dataset`, `--seed` / `--seeds` / `--seed_file` + `--num_seeds`, `--device`, `--output_path` (default `<Method>/results/<dataset>_<method>/`, resolved absolutely from `BENCHMARK_ROOT`), `--data_dir`, `--skip_metrics`.
 
 Results: `<method>/results/<dataset>_<method>/<dataset>/<variant>/metrics_seed<S>.json`, where `<variant>` is method-specific (`onehot` for ALDE, `aice`, `ftmlde`, `clade`, `random`, `greedy`, `topn` for EVOLVEpro; FLEXS has none).
 
-**Never invoke `scripts/<method>/run_generic.py` directly.** The scripts resolve `data_dir` as `dirname(__file__)/../data` and `--output_path` relative to the cwd, so running from `scripts/` looks for `scripts/data/` and writes results in the wrong place. Always go through the symlink in the method directory.
+Each script discovers `BENCHMARK_ROOT` by walking up from its own path until it finds `utils/`, then resolves `data/`, `utils/`, the method's upstream package and the `<Method>/results/` output root from it. So invocation is cwd-independent — no symlink, no `cd` required.
 
 ### Unified panel drivers
 
@@ -131,17 +134,19 @@ python scripts/run_4site_benchmark.py --method ftMLDE --dataset 4site_GB1 --seed
 
 ### AlphaVariant (Plan C — shipped)
 
-Base GPT-REINFORCE + surrogate ensemble, plus **MutCompute** reward shaping and **SHAP** alphabet pruning. Flags differ per panel. Run from `alphavariant/`, and export the env's `libstdc++` first or matplotlib/torch fail with a `CXXABI` error:
+Base GPT-REINFORCE + surrogate ensemble, plus **MutCompute** reward shaping and **SHAP** alphabet pruning. Flags differ per panel. The script lives in `scripts/alphavariant/`, but `--prior_model_path` / `--data_dir` are cwd-relative, so `cd alphavariant` first. Export the env's `libstdc++` or matplotlib/torch fail with a `CXXABI` error:
 
 ```bash
 export LD_LIBRARY_PATH=/home/xux/miniforge3/envs/alphavariant-env/lib:$LD_LIBRARY_PATH
 
+cd alphavariant
+
 # Four-site (lookup landscape)
-python run_generic.py --dataset 4site_PhoQ --seed 621 \
+/home/xux/miniforge3/envs/alphavariant-env/bin/python ../scripts/alphavariant/run_generic.py --dataset 4site_PhoQ --seed 621 \
     --use_mutcompute --plm_reward_lambda 0.5 --shap_prune_alphabet
 
 # Multi-site (CNN oracle, generative proposal)
-python run_generic.py --dataset ms_CreiLOV --seed 621 \
+/home/xux/miniforge3/envs/alphavariant-env/bin/python ../scripts/alphavariant/run_generic.py --dataset ms_CreiLOV --seed 621 \
     --oracle --level uniform \
     --prior_model_path priors/ms_CreiLOV/prior_model.pt \
     --features ev_onehot --use_mutcompute --shap_prune_alphabet \
@@ -167,7 +172,7 @@ python scripts/EVOLVEpro/embed_dataset.py --dataset 4site_GB1
 |---|---|---|
 | ALDE | `ALDE/env` | 3.11 |
 | AiCE | `AiCE/env` | 3.11 |
-| CLADE | `CLADE/env` | 3.11 |
+| CLADE | `CLADE/env` (symlink to `ALDE/env`) | 3.11 |
 | FLEXS | `FLEXS/env` | 3.7 |
 | ftMLDE | `ftMLDE/env` | 3.7 |
 | EVOLVEpro | `EVOLVEpro/env` | 3.11 |
@@ -179,23 +184,31 @@ python scripts/EVOLVEpro/embed_dataset.py --dataset 4site_GB1
 
 Prefer `<method>/env/bin/python` over `conda activate`; it is unambiguous and works inside scripts.
 
-## Symlink System (Critical)
+## Where Harness Code Lives (Critical)
 
-Scripts live in `scripts/` (git-tracked) and are symlinked into method dirs. **Always edit scripts in `scripts/<method>/`, never in method dirs.**
-
-```bash
-# Refresh all symlinks after adding/modifying scripts
-./scripts/add_script_link.sh
-```
+All benchmark code lives in `scripts/` and is run from there. **Method directories contain only upstream code** — no run scripts, no symlinks. There is nothing to sync: editing `scripts/<method>/run_generic.py` *is* editing the thing that runs.
 
 Script naming: `scripts/<method>/run_<dataset>.py` (e.g. `scripts/ALDE/run_4site_GB1.py`), each a thin wrapper that injects `--dataset` and calls `run_generic.main()`.
 
-`add_script_link.sh` still references `scripts/delta_cs/`, `scripts/EvoPlay/`, `scripts/LatProtRL/`, and `scripts/Mu-Protein/`, which no longer exist. Those `create_links` calls are inert, but the script still `mkdir -p`s an empty `Mu-Protein/`.
+Every `run_generic.py` starts with the same bootstrap, which is what makes the method dir unnecessary:
+
+```python
+_p = os.path.dirname(os.path.realpath(__file__))
+while os.path.dirname(_p) != _p and not os.path.isdir(os.path.join(_p, 'utils')):
+    _p = os.path.dirname(_p)
+BENCHMARK_ROOT = _p
+sys.path.insert(0, BENCHMARK_ROOT)
+sys.path.insert(0, os.path.join(BENCHMARK_ROOT, '<Method>'))  # upstream package
+```
+
+Copy that block when adding a method. Never reintroduce `dirname(__file__)/'..'` as the benchmark root, and never default `--output_path` to a cwd-relative path — anchor it at `os.path.join(BENCHMARK_ROOT, '<Method>', 'results', ...)` so results stay where the figure pipeline expects them.
+
+Earlier revisions symlinked these scripts into each method dir and synced them with `scripts/add_script_link.sh`; both the symlinks and that script are gone.
 
 ## Git Tracking
 
 - **Tracked:** `scripts/`, `utils/`, `oracles/` (including the `oracle.pt` checkpoints), `figures/`, `tables/`, `docs/`, `logs/`, `README.md`, `CLAUDE.md`, `AGENTS.md`, `INTEGRATION.md`, `rand_seeds.txt`
-- **Tracked directly (non-submodule method dirs):** `ALDE/`, `AiCE/`, `FLEXS/`, `Random/`, `GreedyWalk/` — their committed content is the symlinks plus upstream code
+- **Tracked directly (non-submodule method dirs):** `ALDE/`, `AiCE/`, `FLEXS/`, `Random/`, `GreedyWalk/` — upstream code only (`Random/` and `GreedyWalk/` have no upstream code at all and now exist purely to hold `results/`)
 - **Submodules** (`.gitmodules`): `alphavariant`, `CLADE`, `ftMLDE`, `EVOLVEpro`, `MULTIevolve`. Commits to these show up as one-line pointer bumps; commit inside the submodule first, then bump here.
 - **Ignored:** `data/`, `results/`, `results_*/` (so `results_oracle/`, `results_ablation/`, `results_backups/`), `sweep_logs/`, `env/`, `output/`, `_logs/`
 
@@ -259,8 +272,9 @@ Standard benchmark budget: 96 sequences/round × 5 rounds = 480 queries.
 
 1. Create `scripts/<method>/run_<dataset>.py` as a thin wrapper that injects `--dataset` and calls `run_generic.main()`
 2. Import utils via compat or direct pattern (see above)
-3. Run `./scripts/add_script_link.sh` to create the symlink
-4. Run from the method dir: `cd <method> && env/bin/python run_<dataset>.py --seed 621`
+3. Run it: `<method>/env/bin/python scripts/<method>/run_<dataset>.py --seed 621`
+
+Only live datasets get wrappers — see the dataset table above. Nothing to symlink or register.
 
 ## Analysis and Reporting
 
@@ -299,9 +313,8 @@ Verify before invoking anything below; the tree still contains material from ear
   - `scripts/run_sweep_parallel.py` and `scripts/run_30seed_gb1_sweep.sh` shell out to the missing launcher.
   - Live sweeps are driven by the per-method shell scripts under `scripts/alphavariant/` and direct driver invocations.
 - **`scripts/generate_tables.py` and `scripts/plotting/`** are hard-coded to the old dataset names (`GB1`, `AAV_med`, `GFP_med`, `GFP_hard`) and will not find current results. Use the `build_*_median_iqr_csv.py` → `draw_*.py` chain above.
-- **Stale per-dataset wrappers:** `scripts/<method>/run_AAV_hard.py`, `run_CreiLOV.py`, `run_PAB1.py`, `run_TRPB.py` target dataset dirs that no longer exist under `data/`. The current equivalents are `ms_AAV`, `ms_CreiLOV`, `ms_PAB1`, `4site_TRPB`.
 - **Dropped datasets:** `4site_TEV` and `ms_GFP` are out of the headline panels but survive in `figures/*median_iqr.csv`, `results_oracle/ms_GFP/`, `oracles/ms_GFP/`, and `docs/ablation_summary.csv`. Ranking panels and Wilcoxon tables cover 3 datasets per panel.
-- **Removed methods:** `EvoPlay`, `LatProtRL`, `delta_cs`, `Mu-Protein` are gone from the tree; references remain in `docs/methods_readme.md`, `scripts/aggregate_metrics.py`, `add_script_link.sh`, and `figures/alphavariant_comparison_median_iqr.csv`.
+- **Removed methods:** `EvoPlay`, `LatProtRL`, `delta_cs`, `Mu-Protein` are gone from the tree; references remain in `docs/methods_readme.md`, `scripts/aggregate_metrics.py`, and `figures/alphavariant_comparison_median_iqr.csv`.
 - **Stale docs:** `data/README.md` describes ~22 dataset dirs (only 6 exist). `tables/_all_datasets_summary.md` is from the older 10-dataset × 7-method panel. `AGENTS.md` still points at `scripts/hpc/launch.py`, `delta_cs`, and `GB1`.
 
 ## Asana Project

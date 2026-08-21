@@ -73,7 +73,7 @@ echo "--- running 1 GFP seed (Plan C oracle, final config) ---"
 cd "$BENCH/alphavariant"
 RES="$BENCH/results_oracle"
 PRIOR="--prior_model_path priors/$DATASET/prior_model.pt"
-python run_generic.py --dataset "$DATASET" --seed "$SEED" \
+python ../scripts/alphavariant/run_generic.py --dataset "$DATASET" --seed "$SEED" \
     --oracle --level uniform $PRIOR \
     --use_mutcompute --shap_prune_alphabet \
     --n_rounds "$N_ROUNDS" --n_steps_per_round "$N_STEPS" --sigma "$SIGMA" \

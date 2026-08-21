@@ -4,13 +4,13 @@
 
 This repository is a protein optimization benchmark suite. Shared code lives in `utils/`; datasets are under `data/<dataset>/data.csv`; generated outputs are in `results/`, `tables/`, `sweep_logs/`, and `smoke_logs/`. Method implementations live in top-level directories such as `ALDE/`, `AiCE/`, `delta_cs/`, and `alphavariant/`.
 
-Run scripts are tracked under `scripts/<method>/`. Many method directories symlink back to those scripts, so edit `scripts/<method>/run_<dataset>.py`, not symlinked copies. Special case: `delta_cs` scripts live under `scripts/delta_cs/BioSeq-GFN-AL/`. Refresh links with `./scripts/add_script_link.sh`.
+Run scripts live only under `scripts/<method>/` and are invoked from there; method directories contain upstream code only. There are no symlinks to refresh.
 
 ## Build, Test, and Development Commands
 
 - `python scripts/hpc/launch.py --method ALDE --dataset GB1 --seeds 5 --cluster local`: run a local smoke benchmark.
 - `python scripts/hpc/launch.py --method ALDE --dataset GB1 --seeds 50 --cluster ibex --dry-run`: render HPC submission.
-- `cd ALDE && python run_GB1.py --seed 42`: run one method/dataset seed from a method directory.
+- `ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed 621`: run one method/dataset seed.
 - `python scripts/aggregate_metrics.py --dataset GB1 --seed 621`: summarize seed metrics.
 - `python scripts/generate_tables.py --datasets GB1 AAV_hard --format markdown`: rebuild tables.
 - `python test_utils_on_alde.py`: run utility compatibility check.

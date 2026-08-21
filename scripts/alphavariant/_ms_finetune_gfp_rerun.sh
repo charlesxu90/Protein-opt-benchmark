@@ -14,7 +14,7 @@ run_job(){ local seed="$1" gpu="$2"
   local res="$OUT/ms_GFP/AlphaVariant/seed${seed}.json"
   if [ -f "$res" ]; then echo "[skip] GFP seed$seed"; return; fi
   mkdir -p "$OUT/_logs"
-  CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY run_generic.py --dataset ms_GFP --seed "$seed" \
+  CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY ../scripts/alphavariant/run_generic.py --dataset ms_GFP --seed "$seed" \
     --prior_model_path priors/ms_GFP/prior_model.pt --finetune_prior \
     --output_path "$OUT" $COMMON > "$OUT/_logs/seed${seed}.log" 2>&1; }
 echo "[gfp-ft] start $(date) (MAXCON=2)"

@@ -23,7 +23,7 @@ for d in ms_AAV ms_PAB1 ms_CreiLOV ms_GFP; do
   PRIOR=""
   [ -f "priors/$d/prior_model.pt" ] && PRIOR="--prior_model_path priors/$d/prior_model.pt"
   echo "[$TAG] $d  $(date +%H:%M:%S)"
-  $PY run_generic.py --dataset "$d" --seeds $SEEDS \
+  $PY ../scripts/alphavariant/run_generic.py --dataset "$d" --seeds $SEEDS \
       --oracle --level uniform $PRIOR \
       --use_mutcompute --shap_prune_alphabet \
       --n_rounds 5 --n_steps_per_round 500 --device cuda:0 \

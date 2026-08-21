@@ -80,7 +80,7 @@ if [ -f "$BENCH/results_oracle/$DATASET/AlphaVariant/seed${SEED}.json" ]; then
     exit 0
 fi
 
-srun python run_generic.py \
+srun python ../scripts/alphavariant/run_generic.py \
     --dataset "$DATASET" --seed "$SEED" \
     --oracle --level uniform $PRIOR \
     --use_mutcompute --shap_prune_alphabet \

@@ -1,1 +1,0 @@
-/home/xux/Desktop/AlphaVariant/Benchmark/scripts/AiCE/scripts/inverse_MPNN.sh

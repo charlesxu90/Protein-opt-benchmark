@@ -26,7 +26,15 @@ import warnings
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# Canonical location is scripts/<Method>/. This file used to be invoked through a
+# symlink in <Method>/, where `__file__/..` happened to be the benchmark root; walk
+# up to find the root instead, so it runs correctly from either path.
+# (Same idiom as scripts/EVOLVEpro/run_generic.py.)
+_p = os.path.dirname(os.path.realpath(__file__))
+while os.path.dirname(_p) != _p and not os.path.isdir(os.path.join(_p, 'utils')):
+    _p = os.path.dirname(_p)
+BENCHMARK_ROOT = _p
+sys.path.insert(0, BENCHMARK_ROOT)
 from utils.compat import (
     compute_all_metrics,
     aggregate_run_metrics,
@@ -47,9 +55,9 @@ def run_single_experiment(
     data_dir: str = None,
 ) -> Dict[str, Any]:
     if data_dir is None:
-        data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+        data_dir = os.path.join(BENCHMARK_ROOT, 'data')
     if output_path is None:
-        output_path = f"results/{dataset}_Random/"
+        output_path = os.path.join(BENCHMARK_ROOT, "Random", "results", f"{dataset}_Random")
 
     if run_id is None:
         run_id = seed
@@ -217,9 +225,9 @@ def main():
     warnings.filterwarnings("ignore")
 
     if args.output_path is None:
-        args.output_path = f"results/{args.dataset}_Random/"
+        args.output_path = os.path.join(BENCHMARK_ROOT, "Random", "results", f"{args.dataset}_Random")
     if args.data_dir is None:
-        args.data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+        args.data_dir = os.path.join(BENCHMARK_ROOT, 'data')
 
     if args.seeds is not None:
         seeds = args.seeds

@@ -15,7 +15,7 @@ MAXCON=8           # concurrent runs (~4 per GPU; each uses ~20% GPU)
 
 run_job() {  # $1=dataset $2=V $3=gpu
     local d="$1" V="$2" gpu="$3"
-    CUDA_VISIBLE_DEVICES="$gpu" $PY run_generic.py \
+    CUDA_VISIBLE_DEVICES="$gpu" $PY ../scripts/alphavariant/run_generic.py \
         --dataset "$d" --seed "$SEED" --oracle --level uniform \
         --prior_model_path "priors/$d/prior_model.pt" \
         --use_mutcompute --shap_prune_alphabet --max_n_mut "$V" --sigma 60 \

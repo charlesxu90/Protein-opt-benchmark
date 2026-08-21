@@ -18,7 +18,7 @@ Run scripts must accept `--seed` (single int) for the job-array launcher to driv
 
 1. Drop the prepared CSV at `data/<name>/data.csv` (`seq, fitness` columns).
 2. Add per-dataset wrappers at `scripts/<method>/run_<name>.py` that delegate to `run_generic.py`.
-3. Run `scripts/add_script_link.sh` to refresh symlinks.
+3. Run it from `scripts/<method>/` — there are no symlinks to refresh.
 4. (HPC) The launcher picks resource defaults from `scripts/hpc/method_resources.yaml`.
 
 ## Per-method environments

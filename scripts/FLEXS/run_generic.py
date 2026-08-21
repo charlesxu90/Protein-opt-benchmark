@@ -48,13 +48,24 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from scipy import stats
 
+import sys
+# Canonical location is scripts/<Method>/. This file used to be invoked through a
+# symlink in <Method>/, where `__file__/..` happened to be the benchmark root; walk
+# up to find the root instead, so it runs correctly from either path.
+# (Same idiom as scripts/EVOLVEpro/run_generic.py.)
+_p = os.path.dirname(os.path.realpath(__file__))
+while os.path.dirname(_p) != _p and not os.path.isdir(os.path.join(_p, 'utils')):
+    _p = os.path.dirname(_p)
+BENCHMARK_ROOT = _p
+sys.path.insert(0, BENCHMARK_ROOT)
+sys.path.insert(0, os.path.join(BENCHMARK_ROOT, 'FLEXS'))  # upstream package lives in the method dir
+
 import flexs
 from flexs import baselines
 from flexs.utils import sequence_utils as s_utils
 
 # Import unified metrics from utils.compat
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from utils.compat import (
     compute_all_metrics,
     aggregate_run_metrics,
@@ -88,7 +99,7 @@ class GenericLandscape(flexs.Landscape):
     def __init__(
         self,
         dataset: str,
-        data_dir: str = "/home/xux/Desktop/AlphaVariant/Benchmark/data",
+        data_dir: str = os.path.join(BENCHMARK_ROOT, 'data'),
         normalize: bool = False
     ):
         """
@@ -305,7 +316,7 @@ def run_single_experiment(
     verbose: int = 2,
     run_id: Optional[int] = None,
     compute_metrics_flag: bool = True,
-    data_dir: str = "/home/xux/Desktop/AlphaVariant/Benchmark/data",
+    data_dir: str = os.path.join(BENCHMARK_ROOT, 'data'),
     rounds: int = 4,  # 4 BO rounds -> 5 total batches (480 queries), benchmark-standard
     sequences_batch_size: int = 96,
     model_queries_per_batch: int = 2000,
@@ -830,7 +841,7 @@ Examples:
     parser.add_argument(
         "--data_dir",
         type=str,
-        default="/home/xux/Desktop/AlphaVariant/Benchmark/data",
+        default=os.path.join(BENCHMARK_ROOT, 'data'),
         help="Base directory for data files"
     )
 
@@ -842,7 +853,7 @@ Examples:
 
     # Set default output path based on dataset name
     if args.output_path is None:
-        args.output_path = f"results/{args.dataset}_AdaLead/"
+        args.output_path = os.path.join(BENCHMARK_ROOT, "FLEXS", "results", f"{args.dataset}_AdaLead")
 
     # Determine which seeds to use
     if args.seeds is not None:

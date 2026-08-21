@@ -23,7 +23,7 @@ run_job() {  # $1=seed $2=gpu
     local seed="$1" gpu="$2"
     local out="$RES/ms_GFP/AlphaVariant/seed${seed}.json"
     if [ -f "$out" ]; then echo "[skip] GFP seed$seed (done)"; return; fi
-    CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY run_generic.py \
+    CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY ../scripts/alphavariant/run_generic.py \
         --dataset ms_GFP --seed "$seed" --oracle --level uniform \
         --prior_model_path priors/ms_GFP/prior_model.pt \
         --features ev_onehot --use_mutcompute --shap_prune_alphabet \

@@ -22,7 +22,7 @@ run_job() {
     local out="$outbase/seed_${seed}/metrics.json"
     mkdir -p "$outbase/_logs"
     if [ -f "$out" ]; then echo "[skip] $ds seed$seed"; return; fi
-    CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY run_generic.py \
+    CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY ../scripts/alphavariant/run_generic.py \
         --dataset "$ds" --seed "$seed" \
         --output_path "$outbase" \
         > "$outbase/_logs/seed${seed}.log" 2>&1

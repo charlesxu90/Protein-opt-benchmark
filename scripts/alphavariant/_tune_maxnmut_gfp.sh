@@ -15,7 +15,7 @@ MAXCON=4
 
 run_job() {  # $1=V $2=gpu
     local V="$1" gpu="$2"
-    CUDA_VISIBLE_DEVICES="$gpu" $PY run_generic.py \
+    CUDA_VISIBLE_DEVICES="$gpu" $PY ../scripts/alphavariant/run_generic.py \
         --dataset ms_GFP --seed "$SEED" --oracle --level uniform \
         --prior_model_path priors/ms_GFP/prior_model.pt \
         --use_mutcompute --shap_prune_alphabet --max_n_mut "$V" --sigma 60 \

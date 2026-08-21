@@ -19,7 +19,7 @@ run_job() {
     local seed="$1" gpu="$2"
     local out="$OUTBASE/seed_${seed}/metrics.json"
     if [ -f "$out" ]; then echo "[skip] PhoQ seed$seed"; return; fi
-    CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY run_generic.py \
+    CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY ../scripts/alphavariant/run_generic.py \
         --dataset 4site_PhoQ --seed "$seed" \
         --output_path "$OUTBASE" \
         --n_gpt_ensemble 2 \

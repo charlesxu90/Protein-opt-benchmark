@@ -48,7 +48,7 @@ echo "[$DATASET] $NGPU GPU(s): ${GPUS[*]}  | CONCURRENCY=$CONCURRENCY/GPU | $(da
 
 run_one() {  # $1=gpu_id  $2=seed
     [ -f "$RES/$DATASET/AlphaVariant/seed${2}.json" ] && { echo "  skip seed $2 (done)"; return 0; }
-    CUDA_VISIBLE_DEVICES="$1" python run_generic.py --dataset "$DATASET" --seed "$2" \
+    CUDA_VISIBLE_DEVICES="$1" python ../scripts/alphavariant/run_generic.py --dataset "$DATASET" --seed "$2" \
         --oracle --level uniform $PRIOR \
         --use_mutcompute --shap_prune_alphabet \
         --n_rounds "$N_ROUNDS" --n_steps_per_round "$N_STEPS" --sigma "$SIGMA" \

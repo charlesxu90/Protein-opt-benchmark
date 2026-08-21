@@ -16,7 +16,7 @@ MAXCON=3           # keep light so the in-flight GFP sweep keeps its GPU share
 
 run_job() {  # $1=V $2=gpu
     local V="$1" gpu="$2"
-    CUDA_VISIBLE_DEVICES="$gpu" $PY run_generic.py \
+    CUDA_VISIBLE_DEVICES="$gpu" $PY ../scripts/alphavariant/run_generic.py \
         --dataset ms_CreiLOV --seed "$SEED" --oracle --level uniform \
         --prior_model_path priors/ms_CreiLOV/prior_model.pt \
         --use_mutcompute --shap_prune_alphabet --max_n_mut "$V" --sigma 60 \

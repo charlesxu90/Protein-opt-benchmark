@@ -14,7 +14,8 @@ neural-net predictor in an active-learning loop:
 
 Output: standard metrics_seedNNN.json with max_fitness across rounds.
 
-Run via the symlinked per-dataset wrappers (e.g. MULTIevolve/run_4site_PhoQ.py).
+Run from anywhere; BENCHMARK_ROOT is discovered by walking up from this file:
+    MULTIevolve/env/bin/python scripts/MULTIevolve/run_generic.py --dataset 4site_PhoQ --seed 621
 """
 from __future__ import annotations
 import argparse

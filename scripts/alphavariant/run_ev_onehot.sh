@@ -37,7 +37,7 @@ for d in "${DATASETS[@]}"; do
     SHAP="--shap_prune_alphabet"   # now valid for all 4 (indexing fix + hotspot-config sync)
     log="$OUT/${d}_seed${SEED}.log"
     echo "[ev_onehot] $d  features=ev_onehot  shap='${SHAP}'  cap=$MAXNMUT  gpu=$GPU  $(date)"
-    CUDA_VISIBLE_DEVICES="$GPU" $PY run_generic.py \
+    CUDA_VISIBLE_DEVICES="$GPU" $PY ../scripts/alphavariant/run_generic.py \
         --dataset "$d" --seed "$SEED" --oracle --level uniform \
         --prior_model_path "priors/$d/prior_model.pt" \
         --features ev_onehot --use_mutcompute $SHAP \

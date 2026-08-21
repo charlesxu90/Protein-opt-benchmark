@@ -1,1 +1,0 @@
-/home/xux/Desktop/AlphaVariant/Benchmark/scripts/AiCE/scripts/04.com_mut_prediction.sh

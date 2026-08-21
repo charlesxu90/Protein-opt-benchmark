@@ -53,12 +53,15 @@ from itertools import combinations
 from scipy import stats
 
 # Add scripts directory to path for AiCE modules
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(SCRIPT_DIR, 'scripts'))
-
-# Import unified metrics from Benchmark utils
-BENCHMARK_UTILS_PATH = "/home/xux/Desktop/AlphaVariant/Benchmark/utils"
-sys.path.insert(0, os.path.dirname(BENCHMARK_UTILS_PATH))
+# Canonical location is scripts/<Method>/. This file used to be invoked through a
+# symlink in <Method>/, where `__file__/..` happened to be the benchmark root; walk
+# up to find the root instead, so it runs correctly from either path.
+# (Same idiom as scripts/EVOLVEpro/run_generic.py.)
+_p = os.path.dirname(os.path.realpath(__file__))
+while os.path.dirname(_p) != _p and not os.path.isdir(os.path.join(_p, 'utils')):
+    _p = os.path.dirname(_p)
+BENCHMARK_ROOT = _p
+sys.path.insert(0, BENCHMARK_ROOT)
 
 from utils.compat import (
     compute_all_metrics,
@@ -607,7 +610,7 @@ def run_single_experiment(
     verbose: int = 2,
     run_id: Optional[int] = None,
     compute_metrics: bool = True,
-    data_dir: str = "/home/xux/Desktop/AlphaVariant/Benchmark/data",
+    data_dir: str = os.path.join(BENCHMARK_ROOT, 'data'),
     aice_config: Optional[AiCEConfig] = None
 ) -> Dict[str, Any]:
     """
@@ -1102,7 +1105,7 @@ Examples:
     parser.add_argument(
         "--data_dir",
         type=str,
-        default="/home/xux/Desktop/AlphaVariant/Benchmark/data",
+        default=os.path.join(BENCHMARK_ROOT, 'data'),
         help="Base directory for data files"
     )
 
@@ -1111,7 +1114,7 @@ Examples:
 
     # Default output path based on dataset name
     if args.output_path is None:
-        args.output_path = f"results/{args.dataset}_AiCE/"
+        args.output_path = os.path.join(BENCHMARK_ROOT, "AiCE", "results", f"{args.dataset}_AiCE")
 
     # Create AiCE config
     aice_config = AiCEConfig(

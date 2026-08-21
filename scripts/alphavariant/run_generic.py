@@ -61,8 +61,16 @@ from loguru import logger
 from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
-# Add alphavariant to path if running from this directory
-sys.path.insert(0, str(Path(__file__).parent))
+# Canonical location is scripts/<Method>/. This file used to be invoked through a
+# symlink in <Method>/, where `__file__/..` happened to be the benchmark root; walk
+# up to find the root instead, so it runs correctly from either path.
+# (Same idiom as scripts/EVOLVEpro/run_generic.py.)
+_p = os.path.dirname(os.path.realpath(__file__))
+while os.path.dirname(_p) != _p and not os.path.isdir(os.path.join(_p, 'utils')):
+    _p = os.path.dirname(_p)
+BENCHMARK_ROOT = _p
+sys.path.insert(0, BENCHMARK_ROOT)
+sys.path.insert(0, os.path.join(BENCHMARK_ROOT, 'alphavariant'))  # upstream package lives in the method dir
 
 from popgen.model.gpt import GPT, GPTConfig, save_gpt_model, save_gpt_config
 from popgen.utils.utils import set_random_seed, parse_config, read_fasta_as_list, load_hotspot
@@ -70,8 +78,7 @@ from popgen.utils.template import PDETemplate
 from popgen.utils.dataset import AASeqDictionary, rnn_start_token_vector
 from popscorer.scoring_functions import ScoringFunctions, BonusFunctions
 
-# Import unified metrics from utils.compat
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# Import unified metrics from utils.compat (BENCHMARK_ROOT is already on sys.path)
 from utils.compat import (
     compute_all_metrics,
     aggregate_run_metrics,
@@ -3269,7 +3276,7 @@ Examples:
                        help="Path to YAML config file (optional; auto-generated if not provided)")
     parser.add_argument("--output_path", type=str, default=None,
                        help="Output directory (default: results/<dataset>_AlphaVariant/)")
-    parser.add_argument("--data_dir", type=str, default="/home/xux/Desktop/AlphaVariant/Benchmark/data",
+    parser.add_argument("--data_dir", type=str, default=os.path.join(BENCHMARK_ROOT, "data"),
                        help="Base data directory")
     parser.add_argument("--skip_metrics", action="store_true", help="Skip metrics computation")
 
@@ -3444,7 +3451,7 @@ Examples:
 
     # Set default output path based on dataset name
     if args.output_path is None:
-        args.output_path = f"results/{args.dataset}_AlphaVariant/"
+        args.output_path = os.path.join(BENCHMARK_ROOT, "alphavariant", "results", f"{args.dataset}_AlphaVariant")
 
     # Determine seeds
     if args.seeds is not None:

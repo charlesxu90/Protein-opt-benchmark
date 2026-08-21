@@ -30,7 +30,7 @@ conda env create -n alphavariant-env -f alphavariant/environment.yml
 # Phase 2.1 baselines: build with the helper script
 bash scripts/setup_baseline_envs.sh   # builds EVOLVEpro/env, ftMLDE/env, MULTIevolve/env
 
-./scripts/add_script_link.sh
+# (No symlink step: run scripts live in scripts/<method>/ and are invoked there.)
 
 # Sanity-check every env is wired correctly
 python -c "

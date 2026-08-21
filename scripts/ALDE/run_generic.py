@@ -46,10 +46,21 @@ import warnings
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 
+import sys
+# Canonical location is scripts/<Method>/. This file used to be invoked through a
+# symlink in <Method>/, where `__file__/..` happened to be the benchmark root; walk
+# up to find the root instead, so it runs correctly from either path.
+# (Same idiom as scripts/EVOLVEpro/run_generic.py.)
+_p = os.path.dirname(os.path.realpath(__file__))
+while os.path.dirname(_p) != _p and not os.path.isdir(os.path.join(_p, 'utils')):
+    _p = os.path.dirname(_p)
+BENCHMARK_ROOT = _p
+sys.path.insert(0, BENCHMARK_ROOT)
+sys.path.insert(0, os.path.join(BENCHMARK_ROOT, 'ALDE'))  # upstream package lives in the method dir
+
 from src.optimize import BayesianOptimization, BO_ARGS
 import src.utils as utils
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from utils.compat import (
     compute_all_metrics,
     aggregate_run_metrics,
@@ -200,11 +211,11 @@ def run_single_experiment(
         Dictionary containing results and metrics
     """
     if data_dir is None:
-        data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
+        data_dir = os.path.join(BENCHMARK_ROOT, 'data')
         data_dir = os.path.abspath(data_dir)
 
     if output_path is None:
-        output_path = f"results/{dataset_name}_ALDE/"
+        output_path = os.path.join(BENCHMARK_ROOT, "ALDE", "results", f"{dataset_name}_ALDE")
 
     # Fixed configuration
     protein = dataset_name
@@ -590,11 +601,11 @@ Examples:
 
     # Resolve output_path
     if args.output_path is None:
-        args.output_path = f"results/{dataset_name}_ALDE/"
+        args.output_path = os.path.join(BENCHMARK_ROOT, "ALDE", "results", f"{dataset_name}_ALDE")
 
     # Resolve data_dir
     if args.data_dir is None:
-        args.data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+        args.data_dir = os.path.join(BENCHMARK_ROOT, 'data')
 
     # Determine which seeds to use
     if args.seeds is not None:

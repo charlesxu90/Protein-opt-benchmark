@@ -47,7 +47,7 @@ run_job() {
     local res; res=$(result_path "$name" "$ds" "$seed")
     if [ -f "$res" ]; then echo "[skip] $name seed$seed"; return; fi
     mkdir -p "$OUT/$name/_logs"
-    CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY run_generic.py \
+    CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY ../scripts/alphavariant/run_generic.py \
         --dataset "$ds" --seed "$seed" --output_path "$OUT/$name" \
         $COMMON $flags > "$OUT/$name/_logs/seed${seed}.log" 2>&1
 }

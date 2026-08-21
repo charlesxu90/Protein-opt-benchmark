@@ -25,7 +25,7 @@ run_job(){ local ds="$1" seed="$2" gpu="$3"
   local res="$OUT/$name/$ds/AlphaVariant/seed${seed}.json"
   if [ -f "$res" ]; then echo "[skip] $name seed$seed"; return; fi
   mkdir -p "$OUT/$name/_logs"
-  CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY run_generic.py --dataset "$ds" --seed "$seed" \
+  CUDA_VISIBLE_DEVICES="$gpu" nice -n 10 $PY ../scripts/alphavariant/run_generic.py --dataset "$ds" --seed "$seed" \
     --prior_model_path "priors/$ds/prior_model.pt" --finetune_prior \
     --output_path "$OUT/$name" $COMMON > "$OUT/$name/_logs/seed${seed}.log" 2>&1; }
 

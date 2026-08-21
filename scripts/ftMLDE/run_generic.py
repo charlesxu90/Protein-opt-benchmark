@@ -40,7 +40,15 @@ import numpy as np
 import pandas as pd
 
 # Import unified metrics from utils.compat
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# Canonical location is scripts/<Method>/. This file used to be invoked through a
+# symlink in <Method>/, where `__file__/..` happened to be the benchmark root; walk
+# up to find the root instead, so it runs correctly from either path.
+# (Same idiom as scripts/EVOLVEpro/run_generic.py.)
+_p = os.path.dirname(os.path.realpath(__file__))
+while os.path.dirname(_p) != _p and not os.path.isdir(os.path.join(_p, 'utils')):
+    _p = os.path.dirname(_p)
+BENCHMARK_ROOT = _p
+sys.path.insert(0, BENCHMARK_ROOT)
 from utils.compat import (
     compute_all_metrics,
     aggregate_run_metrics,
@@ -127,10 +135,9 @@ def run_single_experiment(
     compute_metrics: bool = True,
 ) -> Dict[str, Any]:
     if data_dir is None:
-        data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                                '..', 'data'))
+        data_dir = os.path.join(BENCHMARK_ROOT, 'data')
     if output_path is None:
-        output_path = f"results/{dataset}_ftMLDE/"
+        output_path = os.path.join(BENCHMARK_ROOT, "ftMLDE", "results", f"{dataset}_ftMLDE")
 
     np.random.seed(seed)
     print(f"\n{'='*60}\nftMLDE on {dataset}")
