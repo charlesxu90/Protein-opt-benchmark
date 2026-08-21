@@ -9,7 +9,8 @@ CNN oracle).
 Every (method, dataset) cell is run for the **same 30 seeds**, so all
 comparisons are paired.
 
----
+## Overview
+![Summary of benchmark results](./figs/benchmark.png)
 
 ## 1. Benchmark panels
 
