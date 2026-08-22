@@ -1,7 +1,7 @@
 #!/bin/bash
 # Leave-one-out ablation of AlphaVariant on the remaining 6 datasets.
-# Seed budget (chosen for cost): PhoQ/TEV/TrpB + AAV = 30, PAB1 = 10, GFP = 5.
-# Cheap datasets first; GFP (~5 h/seed) last. Resumable (skip-if-exists), 2-GPU pool.
+# Seed budget (chosen for cost): PhoQ/TEV/TrpB + AAV = 30, PAB1 = 10.
+# Cheap datasets first. Resumable (skip-if-exists), 2-GPU pool.
 set -u
 cd "$(dirname "$0")/../../alphavariant"
 export LD_LIBRARY_PATH=/home/xux/miniforge3/envs/alphavariant-env/lib:${LD_LIBRARY_PATH:-}
@@ -15,8 +15,8 @@ COMMON="--n_rounds 5 --n_steps_per_round 500 --sigma 60 --data_dir ../data"
 SEEDS=(621 100 383 492 987 167 926 446 390 477 137 531 919 3 194 \
        77 303 331 76 433 652 772 527 563 340 998 171 590 548 511)
 
-declare -A NSEEDS=( [4site_PhoQ]=30 [4site_TEV]=30 [4site_TRPB]=30 [ms_AAV]=30 [ms_PAB1]=10 [ms_GFP]=5 )
-declare -A PFX=( [4site_PhoQ]=phoq [4site_TEV]=tev [4site_TRPB]=trpb [ms_AAV]=aav [ms_PAB1]=pab1 [ms_GFP]=gfp )
+declare -A NSEEDS=( [4site_PhoQ]=30 [4site_TEV]=30 [4site_TRPB]=30 [ms_AAV]=30 [ms_PAB1]=10 )
+declare -A PFX=( [4site_PhoQ]=phoq [4site_TEV]=tev [4site_TRPB]=trpb [ms_AAV]=aav [ms_PAB1]=pab1 )
 
 JOBS=()
 for ds in 4site_PhoQ 4site_TEV 4site_TRPB; do
@@ -26,7 +26,7 @@ for ds in 4site_PhoQ 4site_TEV 4site_TRPB; do
   JOBS+=("${p}_no_shap|$ds|--use_mutcompute --plm_reward_lambda 0.5")
   JOBS+=("${p}_bare|$ds|")
 done
-for ds in ms_AAV ms_PAB1 ms_GFP; do
+for ds in ms_AAV ms_PAB1; do
   p=${PFX[$ds]}; P="priors/$ds/prior_model.pt"
   B="--oracle --level uniform"
   JOBS+=("${p}_full|$ds|$B --prior_model_path $P --features ev_onehot --use_mutcompute --shap_prune_alphabet --max_n_mut 2")

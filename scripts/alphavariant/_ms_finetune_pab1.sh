@@ -1,6 +1,6 @@
 #!/bin/bash
-# Continue the multi-site +finetune check on PAB1 + GFP (the expensive datasets).
-# Reduced seeds for cost (PAB1 ~40 min/seed, GFP ~5 h/seed): PAB1 = 10, GFP = 5.
+# Continue the multi-site +finetune check on PAB1 (the expensive dataset).
+# Reduced seeds for cost (PAB1 ~40 min/seed): PAB1 = 10.
 # Compares the +finetune arm against the EXISTING committed full results
 # (results_oracle/<ds>) on the same seeds.
 set -u
@@ -17,8 +17,8 @@ COMMON="--oracle --level uniform --features ev_onehot --use_mutcompute --shap_pr
 SEEDS=(621 100 383 492 987 167 926 446 390 477 137 531 919 3 194 \
        77 303 331 76 433 652 772 527 563 340 998 171 590 548 511)
 
-declare -A PFX=( [ms_PAB1]=pab1 [ms_GFP]=gfp )
-declare -A NSEED=( [ms_PAB1]=10 [ms_GFP]=5 )
+declare -A PFX=( [ms_PAB1]=pab1 )
+declare -A NSEED=( [ms_PAB1]=10 )
 
 run_job(){ local ds="$1" seed="$2" gpu="$3"
   local name="${PFX[$ds]}_ms_finetune"
@@ -31,7 +31,7 @@ run_job(){ local ds="$1" seed="$2" gpu="$3"
 
 echo "[ms-ft2] start $(date)"
 running=0; gpu=0
-for ds in ms_PAB1 ms_GFP; do
+for ds in ms_PAB1; do
   n=${NSEED[$ds]}
   for seed in "${SEEDS[@]:0:$n}"; do
     run_job "$ds" "$seed" "$gpu" &
@@ -54,7 +54,7 @@ def load(pat):
     return d
 print(f"\n{'dataset':9} {'arm':16} {'n':>3} {'max(med)':>9} {'top128(med)':>12}")
 print("-"*60)
-for ds,pfx in [("ms_PAB1","pab1"),("ms_GFP","gfp")]:
+for ds,pfx in [("ms_PAB1","pab1")]:
     full=load(f"{BENCH}/results_oracle/{ds}/AlphaVariant/seed*.json")
     ft  =load(f"{BENCH}/results_ablation/{pfx}_ms_finetune/{ds}/AlphaVariant/seed*.json")
     sh=sorted(set(full)&set(ft))

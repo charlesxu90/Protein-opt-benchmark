@@ -31,7 +31,7 @@ Usage:
     python run_generic.py --dataset AAV_med --config examples/AAV_med/config/train_agent_config.yaml
 
     # Multiple seeds
-    python run_generic.py --dataset GFP_med --seeds 42 123 456
+    python run_generic.py --dataset ms_CreiLOV --seeds 42 123 456
 
     # Load seeds from file
     python run_generic.py --dataset GB1 --seed_file ../rand_seeds.txt --num_seeds 5
@@ -567,7 +567,7 @@ class IterativeProteinTrainer:
         the combo must be expanded back onto the wild-type before scoring -- otherwise
         the oracle sees a 15-mer padded to 119 with 'A' and the reward signal degrades
         (verified: Spearman 0.86 vs 1.0). For datasets where the generation length
-        already equals the oracle length (AAV/PAB1/GFP: AACombo == seq), the map is a
+        already equals the oracle length (AAV/PAB1: AACombo == seq), the map is a
         no-op and sequences pass through unchanged.
         """
         if getattr(self, '_combo_map_ready', False):
@@ -625,7 +625,7 @@ class IterativeProteinTrainer:
             # for raw fitness (as in lookup mode); feeding normalized [0,1] here shrinks
             # the fitness signal (catastrophically for large-range datasets like CreiLOV).
             # Expand short AACombo generations onto the full WT first (CreiLOV); no-op
-            # when generation length already matches the oracle (AAV/PAB1/GFP).
+            # when generation length already matches the oracle (AAV/PAB1).
             return np.asarray(
                 self.oracle_landscape.get_fitness(self._combo_to_full(list(seqs))),
                 dtype=float)
@@ -1021,8 +1021,8 @@ class IterativeProteinTrainer:
         aa2k = {aa: k for k, aa in enumerate(AAs)}
         # Residues at the varying positions, regardless of whether collected
         # sequences are short combos (len == #varying positions, so s[j] is already
-        # the varying residue: AAV/PAB1/CreiLOV) or full-length (e.g. GFP 237aa with
-        # 233 NON-contiguous varying positions, where we must index by the protein
+        # the varying residue: AAV/PAB1/CreiLOV) or full-length (hundreds of residues
+        # with NON-contiguous varying positions, where we must index by the protein
         # coordinate positions[j], not s[j]).
         def _combo_view(s):
             if len(s) == len(positions):
@@ -1110,7 +1110,7 @@ class IterativeProteinTrainer:
         # the following rounds samples on the pruned subspace. Without this, the GPT
         # keeps proposing on the original observed alphabet while the per-position
         # filter enforces the pruned one, so proposals get rejected -- catastrophically
-        # for long sequences (GFP: ~100% dropped, rounds 2-5 stall). pos_aa_candidates
+        # for long sequences (~100% dropped, rounds 2-5 stall). pos_aa_candidates
         # is keyed by 1-indexed protein position (positions[] is 0-indexed).
         # Also gated to oracle mode for the same reason as constrain_alphabet above.
         tmpl = getattr(self, 'template', None)
@@ -1615,7 +1615,7 @@ class IterativeProteinTrainer:
         oh = seqs2feat(seqs)
         # The EV (plmc Potts) model scores full-length sequences; expand short AACombo
         # generations onto the full WT first (CreiLOV: 15-mer -> 119aa). No-op when seqs
-        # are already full length (AAV/PAB1/GFP: AACombo == seq).
+        # are already full length (AAV/PAB1: AACombo == seq).
         ev = np.asarray(self._ev_predictor.seq2score(self._combo_to_full(seqs)),
                         dtype=np.float32).reshape(-1, 1)
         if self._ev_mu is None:          # fit scaler once (on the first = training call)
@@ -3241,8 +3241,8 @@ Examples:
   # Run on AAV medium dataset
   python run_generic.py --dataset AAV_med --seed 42
 
-  # Run on GFP medium with hard-level init
-  python run_generic.py --dataset GFP_med --level hard --seed 42
+  # Run with hard-level init
+  python run_generic.py --dataset ms_CreiLOV --level hard --seed 42
 
   # Use an existing YAML config instead of auto-generating
   python run_generic.py --dataset AAV_med --config examples/AAV_med/config/train_agent_config.yaml

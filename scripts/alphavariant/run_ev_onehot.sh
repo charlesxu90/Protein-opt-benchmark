@@ -1,20 +1,20 @@
 #!/bin/bash
-# AlphaVariant (Plan C) with the EV+one-hot surrogate on the four multi-site ORACLE
+# AlphaVariant (default config) with the EV+one-hot surrogate on the multi-site ORACLE
 # benchmarks. The surrogate (Ridge x2 + BayesianRidge + RF + GradientBoosting) is fit on
 # one-hot ++ EV statistical-energy features and RE-TRAINED each round on the *accumulated*
 # collected variants (self.collected_seqs grows 96 -> 480 over the 5 rounds).
 #
 # SHAP alphabet pruning (--shap_prune_alphabet):
-#   ON for ALL four. _update_alphabet_via_shap now (a) indexes residues at the varying
-#   positions correctly for full-length sequences (GFP: 237aa, 233 non-contiguous positions),
+#   ON for all datasets. _update_alphabet_via_shap now (a) indexes residues at the varying
+#   positions correctly for full-length sequences (hundreds of non-contiguous positions),
 #   and (b) propagates the pruned alphabet into the GPT hotspot config, so generation in the
 #   following rounds samples the pruned subspace. That keeps the per-position filter from
-#   rejecting proposals (previously GFP dropped ~100% -> "kept 0/44536" -> rounds 2-5 stalled).
+#   rejecting proposals (it used to drop ~100% -> "kept 0/44536" -> rounds 2-5 stalled).
 #
 # Usage:
-#   scripts/alphavariant/run_ev_onehot.sh                 # all 4, seed 621, full 500-step config
-#   scripts/alphavariant/run_ev_onehot.sh ms_GFP          # just GFP
-#   SEED=621 N_ROUNDS=2 N_STEPS=20 OUT=/tmp/smoke scripts/alphavariant/run_ev_onehot.sh ms_GFP   # smoke
+#   scripts/alphavariant/run_ev_onehot.sh                 # all 3, seed 621, full 500-step config
+#   scripts/alphavariant/run_ev_onehot.sh ms_CreiLOV      # just one dataset
+#   SEED=621 N_ROUNDS=2 N_STEPS=20 OUT=/tmp/smoke scripts/alphavariant/run_ev_onehot.sh ms_CreiLOV   # smoke
 set -u
 cd "$(dirname "$0")/../../alphavariant"
 export LD_LIBRARY_PATH=/home/xux/miniforge3/envs/alphavariant-env/lib:${LD_LIBRARY_PATH:-}
@@ -31,7 +31,7 @@ GPU="${GPU:-0}"
 mkdir -p "$OUT"
 
 DATASETS=("$@")
-[ ${#DATASETS[@]} -eq 0 ] && DATASETS=(ms_AAV ms_PAB1 ms_CreiLOV ms_GFP)
+[ ${#DATASETS[@]} -eq 0 ] && DATASETS=(ms_AAV ms_PAB1 ms_CreiLOV)
 
 for d in "${DATASETS[@]}"; do
     SHAP="--shap_prune_alphabet"   # now valid for all 4 (indexing fix + hotspot-config sync)

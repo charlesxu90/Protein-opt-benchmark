@@ -6,7 +6,6 @@
 #   5 rounds x 96 = 480 oracle calls, 500 RL steps/round, sigma 60.
 # Writes to the real results_oracle/<d>/AlphaVariant/seedN.json (the 10-method benchmark
 # dir) and is idempotent (skips seeds already done), so it is safe to re-launch.
-# GFP is intentionally excluded (separate cluster run).
 set -u
 cd "$(dirname "$0")/../../alphavariant"
 export LD_LIBRARY_PATH=/home/xux/miniforge3/envs/alphavariant-env/lib:${LD_LIBRARY_PATH:-}

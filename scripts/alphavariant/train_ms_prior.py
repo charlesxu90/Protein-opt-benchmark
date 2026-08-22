@@ -5,7 +5,7 @@ for a multi-site dataset, producing a checkpoint loadable by run_generic.py
 (--prior_model_path).
 
 Input homology:
-    data/<dataset>/target_seqs.fasta   (AAV, GFP, PAB1)  -- multi-line FASTA
+    data/<dataset>/target_seqs.fasta   (AAV, CreiLOV, PAB1)  -- multi-line FASTA
     data/<dataset>/alignment.sto       (CreiLOV)         -- Stockholm MSA
 
 Sequences are trimmed/padded to the target length (= len(wt.fasta)); the GPT is
@@ -14,12 +14,12 @@ so the agent can deepcopy it directly. Output:
     <out>/<dataset>/prior_model.pt  + prior_model.json   (GPTConfig kwargs)
 
 NOTE on alignment: target_seqs.fasta holds FULL-LENGTH homologs of variable length.
-For GFP (homologs ~= target length) trimming is faithful; for AAV/PAB1 (homologs >>
+Where homologs ~= target length trimming is faithful; for AAV/PAB1 (homologs >>
 target) trimming takes the N-terminal window and is NOT aligned to the design region.
 Use --aligned_csv to pass a pre-aligned MSA CSV instead when available.
 
 Usage:
-    python scripts/alphavariant/train_ms_prior.py --dataset ms_GFP --device cuda:0
+    python scripts/alphavariant/train_ms_prior.py --dataset ms_CreiLOV --device cuda:0
 """
 
 from __future__ import annotations
