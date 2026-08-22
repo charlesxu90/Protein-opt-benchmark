@@ -350,10 +350,13 @@ Does **not** reproduce — do not silently regenerate:
 - **The AlphaVariant rows of `figures/alphavariant_comparison_median_iqr.csv` match no directory on disk.** They sit between `_archive_tier1B_canonical`, `_mc_shap_winner` and `_shap_late`, consistent with the CSV predating `_rerun_4site_newcode.sh`. Regenerating this CSV **will change published Panel A AlphaVariant numbers** (e.g. PhoQ median 0.4635 → 0.5256).
 - **Panel A disagrees with itself about which config "AlphaVariant" is.** The ranking panel reads that CSV; the raincloud, 4-site Wilcoxon and 4-site trajectory all read `_archive_tier1B_canonical` (hardcoded in `utils/seed_values.py` and `scripts/draw_trajectory_figures.py`) — the *base* config, not the documented `mc_shap_winner` default. They differ materially on TrpB (0.8842 vs 0.8326).
 - `delta_cs` rows (4) — source directory removed with the method.
+- **EVOLVEpro Panel A does not reproduce its own shipped value.** Re-running `scripts/EVOLVEpro/run_generic.py --dataset 4site_GB1 --seed 621` at the full 480-query budget gives `max_fitness` 0.5451 vs 0.6466 in `EVOLVEpro/results/4site_GB1_EVOLVEpro/.../metrics_seed621.json`. The adapter is seeded (`np.random.seed`, labels permuted with `random_state=args.seed`), so this is either an unseeded upstream regressor or adapter drift since that run — one more full-budget repeat distinguishes them (a second 0.5451 means drift, not nondeterminism).
 
 Also note Panel A per-seed data lives in `<Method>/results/` and `alphavariant/results/`, **not** under `results_*/`. Only Panel B and the ablations satisfy "all results reproducible from `results_*`".
 
 Regenerating figures is non-deterministic at the byte level (PDF metadata), so `git checkout -- figures/` after a verification run rather than committing the churn.
+
+A per-method smoke matrix (every method × `4site_GB1` + `ms_AAV`, reduced budgets) lives in the git-ignored `results_test/`: re-run it with `bash results_test/run_matrix.sh` and `bash results_test/run_alphavariant.sh`. Last run: 20/20 cells passed.
 
 ## Broken / Legacy — do not use
 

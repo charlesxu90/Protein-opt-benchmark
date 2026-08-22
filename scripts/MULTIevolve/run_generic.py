@@ -37,6 +37,35 @@ sys.path.insert(0, str(BENCHMARK_ROOT))
 sys.path.insert(0, str(BENCHMARK_ROOT / "MULTIevolve"))
 
 
+def _reexec_with_env_libstdcxx() -> None:
+    """Re-exec once with this env's lib/ on LD_LIBRARY_PATH, then continue.
+
+    multievolve imports matplotlib transitively (predictors.base_regressors),
+    whose C extension needs a newer CXXABI than the system libstdc++ provides.
+    Without this the run dies at import with
+    `ImportError: ... version 'CXXABI_1.3.15' not found`.
+
+    LD_LIBRARY_PATH has to be set before the process starts -- the loader reads
+    it at startup -- so we re-exec ourselves once. (Loading the env's
+    libstdc++ via ctypes.CDLL(RTLD_GLOBAL) instead gets past the ImportError
+    but then segfaults mid-run, so don't do that.)
+    """
+    if os.environ.get("_MULTIEVOLVE_LIBSTDCXX_REEXEC"):
+        return
+    env_lib = Path(sys.prefix) / "lib"
+    if not (env_lib / "libstdc++.so.6").exists():
+        return
+    current = os.environ.get("LD_LIBRARY_PATH", "")
+    if str(env_lib) in current.split(os.pathsep):
+        return
+    os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, [str(env_lib), current]))
+    os.environ["_MULTIEVOLVE_LIBSTDCXX_REEXEC"] = "1"
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+_reexec_with_env_libstdcxx()
+
+
 def _load_wt(dataset_dir: Path) -> str:
     wt = dataset_dir / "wt.fasta"
     seq = []
