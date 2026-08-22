@@ -123,7 +123,7 @@ Paired Wilcoxon tests (Bonferroni-corrected, n=30):
 ### Per-method run scripts (the canonical path)
 
 Scripts live in `scripts/<method>/` — the only place they live. Each method
-exposes a `run_generic.py` plus thin per-dataset wrappers, and writes a full
+exposes a single `run_generic.py`, selected by `--dataset`, and writes a full
 15-field `metrics_seed<S>.json` per seed.
 
 ```bash
@@ -135,9 +135,6 @@ AiCE/env/bin/python   scripts/AiCE/run_generic.py   --dataset 4site_TRPB --seed 
 # 30 seeds from the shared seed file
 ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 \
     --seed_file rand_seeds.txt --num_seeds 30
-
-# Per-dataset wrappers just inject --dataset
-ALDE/env/bin/python scripts/ALDE/run_4site_GB1.py --seed 621
 
 # Faster iteration: skip the metric suite
 ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed 621 --skip_metrics
@@ -362,11 +359,11 @@ Benchmark/
 │   ├── train_oracle.py             # oracle training
 │   ├── prepare_combingym.py        # CombinGym dataset import
 │   ├── prepare_proteingym.py       # ProteinGym dataset import
-│   ├── compute_mpnn_freqs.py  compute_dataset_checksums.py  compute_landscape_descriptors.py
+│   ├── compute_mpnn_freqs.py  compute_dataset_checksums.py
 │   ├── aggregate_*.py  build_*_median_iqr_csv.py  compute_*_wilcoxon.py
-│   ├── draw_*.py  plot_*.py  generate_tables.py  summarize_ablation.py
+│   ├── draw_*.py  plot_*.py  summarize_ablation.py
 │   ├── setup_baseline_envs.sh      # build EVOLVEpro/ftMLDE/MULTIevolve envs
-│   └── <Method>/                   # run_generic.py + per-dataset wrappers
+│   └── <Method>/                   # run_generic.py (--dataset selects the dataset)
 │
 ├── ALDE/ AiCE/ FLEXS/ CLADE/ ftMLDE/ EVOLVEpro/ MULTIevolve/
 ├── Random/ GreedyWalk/ alphavariant/     # method repos (git-ignored)

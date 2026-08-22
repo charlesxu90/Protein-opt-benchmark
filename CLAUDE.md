@@ -91,7 +91,7 @@ This applies recursively. If a subtask itself is long, decompose it further.
 
 ### Per-method run scripts (the canonical path)
 
-Each method exposes `run_generic.py` plus thin per-dataset wrappers, living **only** in `scripts/<method>/`. Invoke them there with that method's env python; the working directory does not matter.
+Each method exposes a single `run_generic.py`, living **only** in `scripts/<method>/`, with the dataset selected by `--dataset`. Invoke it with that method's env python; the working directory does not matter.
 
 ```bash
 ALDE/env/bin/python   scripts/ALDE/run_generic.py   --dataset 4site_GB1  --seed 621
@@ -101,9 +101,6 @@ AiCE/env/bin/python   scripts/AiCE/run_generic.py   --dataset 4site_TRPB --seed 
 # Multiple seeds
 ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seeds 621 100 383
 ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed_file rand_seeds.txt --num_seeds 30
-
-# Per-dataset wrapper (just injects --dataset)
-ALDE/env/bin/python scripts/ALDE/run_4site_GB1.py --seed 621
 
 # Skip metrics (faster iteration)
 ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed 621 --skip_metrics
@@ -188,7 +185,7 @@ Prefer `<method>/env/bin/python` over `conda activate`; it is unambiguous and wo
 
 All benchmark code lives in `scripts/` and is run from there. **Method directories contain only upstream code** — no run scripts, no symlinks. There is nothing to sync: editing `scripts/<method>/run_generic.py` *is* editing the thing that runs.
 
-Script naming: `scripts/<method>/run_<dataset>.py` (e.g. `scripts/ALDE/run_4site_GB1.py`), each a thin wrapper that injects `--dataset` and calls `run_generic.main()`.
+There is one entry point per method: `scripts/<method>/run_generic.py`, driven by `--dataset`. The old thin `run_<dataset>.py` wrappers are gone — do not reintroduce them.
 
 Every `run_generic.py` starts with the same bootstrap, which is what makes the method dir unnecessary:
 
@@ -324,14 +321,10 @@ AlphaVariant leave-one-out ablations live in `results_ablation/<prefix>_<config>
 
 Verify before invoking anything below; the tree still contains material from earlier benchmark revisions.
 
-- **`scripts/hpc/` no longer exists.** There is no iBex/Shaheen job-array launcher, no `launch.py`, no `method_resources.yaml`, no `log_resource_use.py`. Consequently:
-  - `scripts/profile_methods.py` fails at import (`ModuleNotFoundError: No module named 'launch'`).
-  - `scripts/run_sweep_parallel.py` and `scripts/run_30seed_gb1_sweep.sh` shell out to the missing launcher.
-  - Live sweeps are driven by the per-method shell scripts under `scripts/alphavariant/` and direct driver invocations.
-- **`scripts/generate_tables.py` and `scripts/plotting/`** are hard-coded to the old dataset names (`GB1`, `AAV_med`, `GFP_med`, `GFP_hard`) and will not find current results. Use the `build_*_median_iqr_csv.py` → `draw_*.py` chain above.
+- **`scripts/hpc/` no longer exists** — no job-array launcher, no `launch.py`, no `method_resources.yaml`. The scripts that depended on it (`profile_methods.py`, `run_sweep_parallel.py`, `run_30seed_gb1_sweep.sh`) have been deleted. Live sweeps are driven by the shell scripts under `scripts/alphavariant/` and direct driver invocations.
 - **Dropped datasets:** `4site_TEV` and `ms_GFP` are out of the headline panels but survive in `figures/*median_iqr.csv`, `results_oracle/ms_GFP/` and `oracles/ms_GFP/`. Ranking panels and Wilcoxon tables cover 3 datasets per panel.
 - **Removed methods:** `EvoPlay`, `LatProtRL`, `delta_cs`, `Mu-Protein` are gone from the tree; references remain in `scripts/aggregate_metrics.py` and `figures/alphavariant_comparison_median_iqr.csv`.
-- **`docs/`, `tables/`, `logs/` and `AGENTS.md` no longer exist.** `scripts/compute_planC_wilcoxon.py`, `scripts/compute_wilcoxon_table.py` and `scripts/compute_landscape_descriptors.py` still default their `--out` into `docs/`, so they recreate that directory unless you pass `--out` explicitly.
+- **`docs/`, `tables/`, `logs/` and `AGENTS.md` no longer exist.** `scripts/compute_planC_wilcoxon.py` still defaults its `--out` into `docs/plan_C/`, so it recreates that directory unless you pass `--out` explicitly.
 
 ## Asana Project
 

@@ -3,7 +3,7 @@
 #
 # Each upstream repo ships its own environment.yml. This script materialises
 # them under <method>/env/ matching the convention used by the existing six
-# methods (so scripts/hpc/method_resources.yaml needs no override).
+# methods, so no per-method env override is needed.
 #
 # Usage:
 #   bash scripts/setup_baseline_envs.sh                # all three
@@ -15,7 +15,7 @@
 #   - Run from a host that has internet + conda/mamba. Mamba is preferred:
 #     export CONDA_BIN=mamba.
 #   - If you already have an env elsewhere, point the YAML at it via
-#     `conda_env: <absolute path>` in scripts/hpc/method_resources.yaml.
+#     invoke that env's python directly (see README).
 
 set -euo pipefail
 
@@ -92,5 +92,6 @@ if [[ ${#failures[@]} -gt 0 ]]; then
     exit 1
 fi
 echo "All requested envs built. Verify with:"
-echo "  python scripts/profile_methods.py --dataset GB1 --seed 42 \\"
-echo "      --methods ${TARGETS[*]} --timeout 600"
+for m in "${TARGETS[@]}"; do
+    echo "  $m/env/bin/python -c 'import sys; print(sys.version)'"
+done
