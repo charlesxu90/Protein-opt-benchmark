@@ -4,6 +4,11 @@ analysis/figs/
 old_runs/
 archived/
 data/
+# ...but keep the root data/ docs tracked (datasets themselves stay ignored)
+!/data/
+/data/*
+!/data/README.md
+!/data/CHECKSUMS.txt
 production_utils/
 #analysis/ParPgb/
 analysis/ParPgb/old_withZS.ipynb
