@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Protein Optimization Benchmark Suite comparing **10 methods** (Random, GreedyWalk, ALDE, AdaLead/FLEXS, ftMLDE, CLADE, MULTIevolve, EVOLVEpro, AiCE, AlphaVariant) across **two benchmark panels**:
 
 - **Four-site, true landscape** (`4site_GB1`, `4site_PhoQ`, `4site_TRPB`) — combinatorially-complete 20⁴ libraries, pool selection against measured fitness.
-- **Multi-site, learned oracle** (`ms_AAV`, `ms_CreiLOV`, `ms_PAB1`) — GGS-style `BaseCNN` oracle as the fitness function, generative proposal over varying positions.
+- **Multi-site, learned oracle** (`ms_AAV`, `ms_CreiLOV`, `ms_PAB1`) — a `BaseCNN` oracle as the fitness function, generative proposal over varying positions.
 
-Every (method, dataset) cell uses the **same 30 seeds** (first 30 lines of `rand_seeds.txt`), so all comparisons are paired. See `README.md` for the full benchmark description and `docs/methods_readme.md` for per-method algorithm details.
+Every (method, dataset) cell uses the **same 30 seeds** (first 30 lines of `rand_seeds.txt`), so all comparisons are paired. See `README.md` for the full benchmark description.
 
 ## Working Principles
 
@@ -132,9 +132,9 @@ python scripts/run_4site_benchmark.py --method ftMLDE --dataset 4site_GB1 --seed
 
 `run_oracle_benchmark.py` needs only `ALDE/env` (sklearn + torch), except `--method EVOLVEpro`, which needs the transformers/ESM stack from `alphavariant-env`.
 
-### AlphaVariant (Plan C — shipped)
+### AlphaVariant
 
-Base GPT-REINFORCE + surrogate ensemble, plus **MutCompute** reward shaping and **SHAP** alphabet pruning. Flags differ per panel. The script lives in `scripts/alphavariant/`, but `--prior_model_path` / `--data_dir` are cwd-relative, so `cd alphavariant` first. Export the env's `libstdc++` or matplotlib/torch fail with a `CXXABI` error:
+One default configuration is used throughout, and it is what every AlphaVariant curve in the figures comes from: GPT-REINFORCE + surrogate ensemble, with **MutCompute** reward shaping and **SHAP** alphabet pruning. Only the flags below differ per panel. The script lives in `scripts/alphavariant/`, but `--prior_model_path` / `--data_dir` are cwd-relative, so `cd alphavariant` first. Export the env's `libstdc++` or matplotlib/torch fail with a `CXXABI` error:
 
 ```bash
 export LD_LIBRARY_PATH=/home/xux/miniforge3/envs/alphavariant-env/lib:$LD_LIBRARY_PATH
@@ -154,7 +154,7 @@ cd alphavariant
     --device cuda:0 --data_dir ../data
 ```
 
-Shipped results: `alphavariant/results/<dataset>_AlphaVariant_mc_shap_winner/seed_*/metrics.json` (four-site) and `results_oracle/<dataset>/AlphaVariant/seed*.json` (multi-site). Sweep launchers: `scripts/alphavariant/run_ev_onehot.sh`, `_run_30seed_evonehot.sh`, `_rerun_4site_newcode.sh`. See `README.md` §3 for the per-flag table.
+Per-seed results the figures read: `alphavariant/results/<dataset>_AlphaVariant_mc_shap_winner/seed_*/metrics.json` (four-site) and `results_oracle/<dataset>/AlphaVariant/seed*.json` (multi-site). Sweep launchers: `scripts/alphavariant/run_ev_onehot.sh`, `_run_30seed_evonehot.sh`, `_rerun_4site_newcode.sh`. See `README.md` §3 for the per-flag table.
 
 ### Training the pieces
 
@@ -207,12 +207,12 @@ Earlier revisions symlinked these scripts into each method dir and synced them w
 
 ## Git Tracking
 
-- **Tracked:** `scripts/`, `utils/`, `oracles/` (including the `oracle.pt` checkpoints), `figures/`, `tables/`, `docs/`, `logs/`, `README.md`, `CLAUDE.md`, `AGENTS.md`, `INTEGRATION.md`, `rand_seeds.txt`
+- **Tracked:** `scripts/`, `utils/`, `oracles/` (including the `oracle.pt` checkpoints), `figures/`, `README.md`, `CLAUDE.md`, `INTEGRATION.md`, `rand_seeds.txt`, and the two documentation files inside the otherwise-ignored `data/`: `data/README.md` and `data/CHECKSUMS.txt`
 - **Tracked directly (non-submodule method dirs):** `ALDE/`, `AiCE/`, `FLEXS/`, `Random/`, `GreedyWalk/` — upstream code only (`Random/` and `GreedyWalk/` have no upstream code at all and now exist purely to hold `results/`)
 - **Submodules** (`.gitmodules`): `alphavariant`, `CLADE`, `ftMLDE`, `EVOLVEpro`, `MULTIevolve`. Commits to these show up as one-line pointer bumps; commit inside the submodule first, then bump here.
 - **Ignored:** `data/`, `results/`, `results_*/` (so `results_oracle/`, `results_ablation/`, `results_backups/`), `sweep_logs/`, `env/`, `output/`, `_logs/`
 
-Note `data/` is **git-ignored** — datasets are not distributed with the repo. Regenerate via `scripts/prepare_combingym.py` / `scripts/prepare_proteingym.py` and verify with `sha256sum -c data/CHECKSUMS.txt`.
+Note `data/` is **git-ignored** — datasets are not distributed with the repo. Regenerate via `scripts/prepare_combingym.py` / `scripts/prepare_proteingym.py` and verify with `sha256sum -c data/CHECKSUMS.txt` from the benchmark root. `.gitignore` carries explicit `!/data/README.md` / `!/data/CHECKSUMS.txt` negations, so those two files (and only those) are tracked.
 
 ## Architecture
 
@@ -222,7 +222,7 @@ All run scripts import from this package via `sys.path.insert(0, '<benchmark_roo
 
 | Module | Role |
 |--------|------|
-| `metrics.py` | The 15-field metric suite (distance, fitness, calibration, correlation) |
+| `metrics.py` | Metric suite — the two scored metrics plus diagnostic fields (distance, calibration, correlation) |
 | `data.py` | Dataset loading, `FitnessLandscape` class for O(1) lookup, encoding utils |
 | `compat.py` | Drop-in replacement for ALDE-style `from src.metrics import ...` |
 | `evaluator.py` | `BenchmarkEvaluator` class for standardized evaluation |
@@ -264,9 +264,25 @@ All in `data/<name>/data.csv` with a **`seq`** column (not `sequence`) plus `fit
 | `ms_CreiLOV` | 165,428 | 119 | 15 positions | 620 – 15,690 |
 | `ms_PAB1` | 36,522 | 75 | 75 positions | 0.0024 – 2.628 |
 
-Each dataset dir also holds the per-method artifacts: `wt.fasta`, `varying_positions.txt` (multi-site), a `*.pdb` structure for ProteinMPNN/MutCompute, `mutcompute.csv`, `aice_mpnn_freq.npz`, `plmc/` (EVmutation couplings), `align/` + `prior_aligned.csv` (AlphaVariant homolog prior), `embeddings_evolvepro.pt`.
+Every dataset dir also holds `wt.fasta`, a `*.pdb` structure and `mutcompute.csv`. The rest is panel-specific:
+
+- **four-site:** `embeddings_evolvepro.pt` + `labels_evolvepro.csv` (EVOLVEpro)
+- **multi-site:** `varying_positions.txt`, `target_seqs.fasta`, `plmc/` (EVmutation couplings), `prior_aligned.csv` (AlphaVariant homolog prior), `aice_mpnn_freq.npz` (AiCE)
+
+There is no `align/` any more — only the derived `prior_aligned.csv`. Per-file documentation: `data/README.md`.
 
 Standard benchmark budget: 96 sequences/round × 5 rounds = 480 queries.
+
+### Scored metrics
+
+Only **two** metrics are scored, both over the 480 queried sequences of a run and normalized to [0,1]:
+
+| Metric | Field | Definition |
+|---|---|---|
+| Max fitness | `max_fitness_norm` | best fitness the run discovered |
+| Top-128 mean fitness | `top128_mean_norm` | mean fitness of the run's 128 best sequences |
+
+Across the 30 seeds each is reported as median + IQR (Q1/Q3), and the ranking panels rank on that per-dataset median. Everything else `utils/metrics.py` emits (diversity, novelty, calibration, surrogate correlation) is diagnostic and is **not** used for ranking — don't introduce it into headline comparisons.
 
 ## Adding a New Run Script
 
@@ -282,8 +298,8 @@ Only live datasets get wrappers — see the dataset table above. Nothing to syml
 # --- aggregate per-seed JSON -> tidy median/IQR CSVs -------------------------
 python scripts/aggregate_oracle_results.py                 # results_oracle/ -> figures/ms_oracles/
 python scripts/build_oracle_median_iqr_csv.py              # multisite_oracle_median_iqr.csv
-python scripts/build_median_iqr_csv.py --plans C           # four-site, per AlphaVariant plan
-python scripts/aggregate_metrics.py --dataset 4site_GB1 --seed 621   # one dataset/seed, all 15 fields
+python scripts/build_median_iqr_csv.py --plans C           # four-site medians/IQRs
+python scripts/aggregate_metrics.py --dataset 4site_GB1 --seed 621   # one dataset/seed, every field
 
 # --- significance (paired Wilcoxon, Bonferroni, n=30) -----------------------
 python scripts/compute_oracle_wilcoxon.py --task multisite  # -> figures/ms_oracles/wilcoxon_*
@@ -299,10 +315,10 @@ python scripts/plot_4site_density.py                       # landscape-difficult
 python scripts/draw_supplementary_ablation.py              # AlphaVariant ablation bars
 
 # --- ablation ---------------------------------------------------------------
-python scripts/summarize_ablation.py                       # -> docs/ablation_summary.csv
+python scripts/summarize_ablation.py                       # -> results_ablation/ablation_summary.csv
 ```
 
-AlphaVariant leave-one-out ablations live in `results_ablation/<prefix>_<config>/`. Four-site configs: `full` (Plan C), `no_mcreward`, `no_shap`, `bare`. Multi-site configs: `full`, `no_ev`, `no_shap`, `no_cap`, `no_prior`.
+AlphaVariant leave-one-out ablations live in `results_ablation/<prefix>_<config>/`, where `full` is the default configuration used in the headline figures and the others switch one component off. Four-site: `no_mcreward`, `no_shap`, `bare`. Multi-site: `no_ev`, `no_shap`, `no_cap`, `no_prior`. They feed the supplementary ablation figure only.
 
 ## Broken / Legacy — do not use
 
@@ -313,9 +329,9 @@ Verify before invoking anything below; the tree still contains material from ear
   - `scripts/run_sweep_parallel.py` and `scripts/run_30seed_gb1_sweep.sh` shell out to the missing launcher.
   - Live sweeps are driven by the per-method shell scripts under `scripts/alphavariant/` and direct driver invocations.
 - **`scripts/generate_tables.py` and `scripts/plotting/`** are hard-coded to the old dataset names (`GB1`, `AAV_med`, `GFP_med`, `GFP_hard`) and will not find current results. Use the `build_*_median_iqr_csv.py` → `draw_*.py` chain above.
-- **Dropped datasets:** `4site_TEV` and `ms_GFP` are out of the headline panels but survive in `figures/*median_iqr.csv`, `results_oracle/ms_GFP/`, `oracles/ms_GFP/`, and `docs/ablation_summary.csv`. Ranking panels and Wilcoxon tables cover 3 datasets per panel.
-- **Removed methods:** `EvoPlay`, `LatProtRL`, `delta_cs`, `Mu-Protein` are gone from the tree; references remain in `docs/methods_readme.md`, `scripts/aggregate_metrics.py`, and `figures/alphavariant_comparison_median_iqr.csv`.
-- **Stale docs:** `data/README.md` describes ~22 dataset dirs (only 6 exist). `tables/_all_datasets_summary.md` is from the older 10-dataset × 7-method panel. `AGENTS.md` still points at `scripts/hpc/launch.py`, `delta_cs`, and `GB1`.
+- **Dropped datasets:** `4site_TEV` and `ms_GFP` are out of the headline panels but survive in `figures/*median_iqr.csv`, `results_oracle/ms_GFP/` and `oracles/ms_GFP/`. Ranking panels and Wilcoxon tables cover 3 datasets per panel.
+- **Removed methods:** `EvoPlay`, `LatProtRL`, `delta_cs`, `Mu-Protein` are gone from the tree; references remain in `scripts/aggregate_metrics.py` and `figures/alphavariant_comparison_median_iqr.csv`.
+- **`docs/`, `tables/`, `logs/` and `AGENTS.md` no longer exist.** `scripts/compute_planC_wilcoxon.py`, `scripts/compute_wilcoxon_table.py` and `scripts/compute_landscape_descriptors.py` still default their `--out` into `docs/`, so they recreate that directory unless you pass `--out` explicitly.
 
 ## Asana Project
 

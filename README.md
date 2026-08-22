@@ -88,9 +88,6 @@ the figures.
 | **AiCE** | Inverse folding + evolutionary frequency filtering | ESM | — | ProteinMPNN | `AiCE/env` |
 | **AlphaVariant** | VariantGPT generative + REINFORCE + surrogate ensemble | VariantGPT | ✓ | MutCompute | `~/miniforge3/envs/alphavariant-env` |
 
-`docs/methods_readme.md` has the full per-method algorithm sketches, failure
-modes and references.
-
 **Current results** (mean rank across each panel's 3 datasets, max fitness —
 `figures/ranking_panel_*_max_fitness_values.csv`):
 
@@ -302,7 +299,7 @@ python scripts/plot_4site_density.py                      # landscape-difficulty
 python scripts/draw_supplementary_ablation.py             # AlphaVariant ablation bars
 
 # --- ablation ---------------------------------------------------------------
-python scripts/summarize_ablation.py                      # docs/ablation_summary.csv
+python scripts/summarize_ablation.py                      # results_ablation/ablation_summary.csv
 ```
 
 Figure style is centralized in `utils/plot_style_utils.py`
@@ -324,7 +321,7 @@ supplementary ablation figure only — the main curves are always `full`.
 
 ```
 Benchmark/
-├── README.md  CLAUDE.md  AGENTS.md  INTEGRATION.md
+├── README.md  CLAUDE.md  INTEGRATION.md
 ├── rand_seeds.txt                  # 500 seeds; the benchmark uses the first 30
 │
 ├── utils/                          # unified benchmark library
@@ -363,8 +360,8 @@ Benchmark/
 │
 ├── results_oracle/                 # Panel B per-seed JSON
 ├── results_ablation/               # AlphaVariant leave-one-out ablations
-├── figures/  tables/  docs/        # analysis outputs + manuscript material
-└── logs/  sweep_logs/  results_backups/
+├── figures/                        # analysis outputs (CSVs + figures)
+└── sweep_logs/  results_backups/
 ```
 
 ### Where the harness code lives
@@ -466,5 +463,3 @@ hits, rate = global_max_hit_count([r.max_fitness for r in runs],
 | AiCE | Inverse-folding (ProteinMPNN) guided combinatorial editing |
 | AlphaVariant | VariantGPT generative optimization + REINFORCE |
 | Datasets | GB1: Wu *et al.* 2016 · PhoQ: Podgornaia & Laub 2015 · TrpB: Johnston *et al.* 2024 · AAV: Bryant *et al.* 2021 · CreiLOV: Chen *et al.* 2023 · PAB1: Melamed *et al.* 2013 |
-
-Full citations: `docs/methods_readme.md` §5.
