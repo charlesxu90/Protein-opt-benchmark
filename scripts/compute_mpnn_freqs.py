@@ -16,7 +16,7 @@ Saves data/<dataset>/aice_mpnn_freq.npz with:
     alphabet  : the 20-letter order
 
 Run with AiCE/env (has the ProteinMPNN torch deps):
-    CUDA_VISIBLE_DEVICES=0 AiCE/env/bin/python scripts/compute_mpnn_freqs.py --dataset ms_GFP
+    CUDA_VISIBLE_DEVICES=0 AiCE/env/bin/python scripts/compute_mpnn_freqs.py --dataset ms_CreiLOV
 """
 
 from __future__ import annotations

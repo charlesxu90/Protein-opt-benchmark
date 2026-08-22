@@ -21,7 +21,7 @@ conda env create -f plm_environment.yml -p ./plm_env  # only for embedding step
 conda activate ./plm_env
 
 # Embed every variant in our landscape under ESM-2
-python scripts/EVOLVEpro/embed_dataset.py --dataset GB1 --model esm2_650M
+python scripts/EVOLVEpro/embed_dataset.py --dataset 4site_GB1 --model esm2_650M
 # Writes data/GB1/embeddings_esm2_650M.pt (~700MB for GB1)
 ```
 

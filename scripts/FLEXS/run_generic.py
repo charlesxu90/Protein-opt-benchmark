@@ -20,19 +20,19 @@ Metrics computed (from multiple reference works):
 
 Usage:
     # Single run with default seed
-    python run_generic.py --dataset AAV_med
+    FLEXS/env/bin/python scripts/FLEXS/run_generic.py --dataset 4site_GB1
 
     # Single run with specific seed
-    python run_generic.py --dataset GFP_med --seed 42
+    FLEXS/env/bin/python scripts/FLEXS/run_generic.py --dataset 4site_TRPB --seed 42
 
     # Multiple runs with different seeds for randomness evaluation
-    python run_generic.py --dataset GB1 --seeds 42 123 456 789 1000
+    FLEXS/env/bin/python scripts/FLEXS/run_generic.py --dataset 4site_GB1 --seeds 42 123 456 789 1000
 
     # Use predefined seeds from file
-    python run_generic.py --dataset AAV_hard --seed_file ../rand_seeds.txt --num_seeds 5
+    FLEXS/env/bin/python scripts/FLEXS/run_generic.py --dataset 4site_PhoQ --seed_file rand_seeds.txt --num_seeds 30
 
     # Skip metrics computation (faster)
-    python run_generic.py --dataset AAV_med --seed 42 --skip_metrics
+    FLEXS/env/bin/python scripts/FLEXS/run_generic.py --dataset 4site_GB1 --seed 42 --skip_metrics
 """
 
 from __future__ import annotations
@@ -741,20 +741,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single run on AAV_med with default seed
-  python run_generic.py --dataset AAV_med
+  # Single run on 4site_GB1 with default seed
+  FLEXS/env/bin/python scripts/FLEXS/run_generic.py --dataset 4site_GB1
 
   # Single run with specific seed
-  python run_generic.py --dataset GFP_med --seed 42
+  FLEXS/env/bin/python scripts/FLEXS/run_generic.py --dataset 4site_TRPB --seed 42
 
   # Multiple runs for randomness evaluation
-  python run_generic.py --dataset GB1 --seeds 42 123 456 789 1000
+  FLEXS/env/bin/python scripts/FLEXS/run_generic.py --dataset 4site_GB1 --seeds 42 123 456 789 1000
 
   # Load seeds from file
-  python run_generic.py --dataset AAV_hard --seed_file ../rand_seeds.txt --num_seeds 5
+  FLEXS/env/bin/python scripts/FLEXS/run_generic.py --dataset 4site_PhoQ --seed_file rand_seeds.txt --num_seeds 30
 
   # Skip metrics computation
-  python run_generic.py --dataset AAV_med --seed 42 --skip_metrics
+  FLEXS/env/bin/python scripts/FLEXS/run_generic.py --dataset 4site_GB1 --seed 42 --skip_metrics
         """
     )
 
@@ -763,7 +763,7 @@ Examples:
         "--dataset",
         type=str,
         required=True,
-        help="Name of the dataset (subdirectory under data_dir, e.g. AAV_med, GB1, GFP_med)"
+        help="Name of the dataset (subdirectory under data_dir, e.g. 4site_GB1, 4site_PhoQ, 4site_TRPB)"
     )
 
     # Seed configuration

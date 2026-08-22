@@ -13,9 +13,9 @@ Configuration:
     - Rounds: 5 (480 total queries)
 
 Usage:
-    python run_generic.py --dataset GB1 --seed 42
-    python run_generic.py --dataset AAV_med --seeds 42 123 456
-    python run_generic.py --dataset GFP_hard --seed_file ../rand_seeds.txt --num_seeds 10
+    ALDE/env/bin/python scripts/GreedyWalk/run_generic.py --dataset 4site_GB1 --seed 42
+    ALDE/env/bin/python scripts/GreedyWalk/run_generic.py --dataset 4site_GB1 --seeds 42 123 456
+    ALDE/env/bin/python scripts/GreedyWalk/run_generic.py --dataset 4site_TRPB --seed_file rand_seeds.txt --num_seeds 30
 """
 
 from __future__ import annotations
@@ -278,7 +278,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Greedy hill-climbing baseline for protein optimization benchmark")
     parser.add_argument("--dataset", type=str, required=True,
-                        help="Dataset name (GB1, AAV_med, AAV_hard, GFP_med, GFP_hard)")
+                        help="Dataset name (4site_GB1, 4site_PhoQ, 4site_TRPB)")
     seed_group = parser.add_mutually_exclusive_group()
     seed_group.add_argument("--seed", type=int, default=None)
     seed_group.add_argument("--seeds", type=int, nargs='+')

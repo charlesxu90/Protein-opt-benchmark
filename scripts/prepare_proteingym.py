@@ -374,7 +374,8 @@ def main():
     print(f"\n  {ok_count}/{len(results)} datasets prepared successfully.")
     print(f"  Data saved to: {args.data_dir}/")
     print(f"\n  These datasets can be used with any method's run_generic.py script:")
-    print(f"    python run_generic.py --dataset BLAT_ECOLX --seed 42")
+    example = next((n for n, r in results.items() if r["status"] == "OK"), "<dataset>")
+    print(f"    <method>/env/bin/python scripts/<method>/run_generic.py --dataset {example} --seed 621")
     print(f"{'='*70}")
 
 

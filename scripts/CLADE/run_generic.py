@@ -25,7 +25,7 @@ zero-shot evolutionary scores; both are optional add-ons.
 
 Usage
 -----
-    python run_generic.py --dataset GB1 --seed 42
+    CLADE/env/bin/python scripts/CLADE/run_generic.py --dataset 4site_GB1 --seed 621
 """
 
 from __future__ import annotations

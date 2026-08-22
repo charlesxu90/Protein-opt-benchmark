@@ -19,19 +19,19 @@ Architecture auto-selection:
 
 Usage:
     # Single run on a dataset
-    python run_generic.py --dataset AAV_med --seed 42
+    ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed 42
 
     # Multiple runs with different seeds
-    python run_generic.py --dataset GB1 --seeds 42 123 456 789 1000
+    ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seeds 42 123 456 789 1000
 
     # Use predefined seeds from file
-    python run_generic.py --dataset GFP_med --seed_file src/rndseed.txt --num_seeds 5
+    ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_TRPB --seed_file rand_seeds.txt --num_seeds 30
 
     # Skip metrics computation (faster)
-    python run_generic.py --dataset AAV_hard --seed 42 --skip_metrics
+    ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_PhoQ --seed 42 --skip_metrics
 
     # Use a different data directory
-    python run_generic.py --dataset AAV_med --seed 42 --data_dir /path/to/data
+    ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed 42 --data_dir data
 """
 
 from __future__ import annotations
@@ -529,20 +529,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single run on AAV_med
-  python run_generic.py --dataset AAV_med --seed 42
+  # Single run on 4site_GB1
+  ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed 42
 
   # Single run on GB1
-  python run_generic.py --dataset GB1 --seed 42
+  ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed 42
 
   # Multiple runs for randomness evaluation
-  python run_generic.py --dataset GFP_med --seeds 42 123 456 789 1000
+  ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_TRPB --seeds 42 123 456 789 1000
 
   # Load seeds from file
-  python run_generic.py --dataset AAV_hard --seed_file src/rndseed.txt --num_seeds 5
+  ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_PhoQ --seed_file rand_seeds.txt --num_seeds 30
 
   # Skip metrics computation
-  python run_generic.py --dataset AAV_med --seed 42 --skip_metrics
+  ALDE/env/bin/python scripts/ALDE/run_generic.py --dataset 4site_GB1 --seed 42 --skip_metrics
         """
     )
 

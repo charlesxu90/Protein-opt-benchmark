@@ -14,8 +14,8 @@ it normalized to [0, 1]. We auto-rescale so the comparison is apples-to-apples.
 
 Usage
 -----
-    python scripts/aggregate_metrics.py --dataset GB1 --seed 621
-    python scripts/aggregate_metrics.py --dataset GB1 --seed 621 --output results/GB1_summary.json
+    python scripts/aggregate_metrics.py --dataset 4site_GB1 --seed 621
+    python scripts/aggregate_metrics.py --dataset 4site_GB1 --seed 621 --output results/4site_GB1_summary.json
 """
 
 from __future__ import annotations

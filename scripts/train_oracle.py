@@ -20,7 +20,7 @@ Usage:
     # cheap pipeline check (subsample + few epochs)
     python scripts/train_oracle.py --dataset ms_CreiLOV --smoke
     # full training
-    python scripts/train_oracle.py --dataset ms_GFP --device cuda:0
+    python scripts/train_oracle.py --dataset ms_CreiLOV --device cuda:0
 """
 
 from __future__ import annotations

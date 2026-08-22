@@ -23,7 +23,7 @@ averaging follows the ftMLDE default `n_averaged=3`.
 
 Usage
 -----
-    python run_generic.py --dataset GB1 --seed 42
+    ftMLDE/env/bin/python scripts/ftMLDE/run_generic.py --dataset 4site_GB1 --seed 621
 """
 
 from __future__ import annotations

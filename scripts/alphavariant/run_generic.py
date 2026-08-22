@@ -11,33 +11,48 @@ Configuration:
     - Scorer: aa_onehot based surrogate with iterative updates
     - Training: REINFORCE with prior regularization
     - Batch size: 96
-    - Rounds: 15 (iterative approach)
+    - Rounds: 5 (benchmark-standard -> 480 queries)
 
 Iterative Training Process:
     - Round 1: Initial sampling from configurable fitness region
-    - Rounds 2-15: GPT-guided sampling, get ground truth fitness, update surrogate, train GPT
+    - Rounds 2-5: GPT-guided sampling, get ground truth fitness, update surrogate, train GPT
+
+Live datasets: 4site_GB1, 4site_PhoQ, 4site_TRPB (lookup landscape) and
+ms_AAV, ms_CreiLOV, ms_PAB1 (CNN oracle, needs --oracle + --prior_model_path).
 
 Usage:
-    # Run on AAV_med dataset
-    python run_generic.py --dataset AAV_med --seed 42
+    Run from the alphavariant/ package dir — --config, --prior_model_path and
+    --output_path are resolved relative to the working directory:
 
-    # Run on a custom dataset (data/<name>/data.csv must exist with seq,fitness columns)
-    python run_generic.py --dataset my_protein --seed 42
+        cd alphavariant
+        PY=/home/xux/miniforge3/envs/alphavariant-env/bin/python
 
-    # Use hard-level initialization (bottom 20th percentile)
-    python run_generic.py --dataset AAV_hard --level hard --seed 42
+    # Four-site (lookup landscape)
+    $PY ../scripts/alphavariant/run_generic.py --dataset 4site_GB1 --seed 621
 
-    # Override with an existing YAML config
-    python run_generic.py --dataset AAV_med --config examples/AAV_med/config/train_agent_config.yaml
+    # Multi-site (CNN oracle, generative proposal over the varying positions)
+    $PY ../scripts/alphavariant/run_generic.py --dataset ms_CreiLOV --seed 621 \
+        --oracle --prior_model_path priors/ms_CreiLOV/prior_model.pt
+
+    # Custom dataset (data/<name>/data.csv must exist with seq,fitness columns)
+    $PY ../scripts/alphavariant/run_generic.py --dataset my_protein --seed 621
+
+    # Hard-level initialization (bottom 20th percentile)
+    $PY ../scripts/alphavariant/run_generic.py --dataset 4site_PhoQ --level hard --seed 621
+
+    # Override the auto-generated config with an existing YAML
+    $PY ../scripts/alphavariant/run_generic.py --dataset 4site_GB1 \
+        --config examples/Savinase/config/train_agent_config.yaml
 
     # Multiple seeds
-    python run_generic.py --dataset ms_CreiLOV --seeds 42 123 456
+    $PY ../scripts/alphavariant/run_generic.py --dataset ms_CreiLOV --seeds 621 100 383
 
-    # Load seeds from file
-    python run_generic.py --dataset GB1 --seed_file ../rand_seeds.txt --num_seeds 5
+    # Load seeds from the shared benchmark seed file (30-seed standard)
+    $PY ../scripts/alphavariant/run_generic.py --dataset 4site_GB1 \
+        --seed_file ../rand_seeds.txt --num_seeds 30
 
-    # Skip metrics computation (faster)
-    python run_generic.py --dataset AAV_med --seed 42 --skip_metrics
+    # Skip metrics computation (faster iteration)
+    $PY ../scripts/alphavariant/run_generic.py --dataset 4site_GB1 --seed 621 --skip_metrics
 """
 
 from __future__ import annotations
@@ -3237,27 +3252,35 @@ def main():
         description="Run AlphaVariant iterative optimization on any protein dataset",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  # Run on AAV medium dataset
-  python run_generic.py --dataset AAV_med --seed 42
+Examples (run from the alphavariant/ package dir — --config, --prior_model_path
+and --output_path are relative to the working directory):
 
-  # Run with hard-level init
-  python run_generic.py --dataset ms_CreiLOV --level hard --seed 42
+  # Four-site lookup landscape
+  python ../scripts/alphavariant/run_generic.py --dataset 4site_GB1 --seed 621
+
+  # Multi-site CNN oracle
+  python ../scripts/alphavariant/run_generic.py --dataset ms_CreiLOV --seed 621 \
+      --oracle --prior_model_path priors/ms_CreiLOV/prior_model.pt
+
+  # Hard-level init
+  python ../scripts/alphavariant/run_generic.py --dataset 4site_PhoQ --level hard --seed 621
 
   # Use an existing YAML config instead of auto-generating
-  python run_generic.py --dataset AAV_med --config examples/AAV_med/config/train_agent_config.yaml
+  python ../scripts/alphavariant/run_generic.py --dataset 4site_GB1 \
+      --config examples/Savinase/config/train_agent_config.yaml
 
-  # Multiple runs for randomness evaluation
-  python run_generic.py --dataset GB1 --seeds 42 123 456 789 1000
+  # Multiple seeds
+  python ../scripts/alphavariant/run_generic.py --dataset 4site_GB1 --seeds 621 100 383
 
-  # Load seeds from file
-  python run_generic.py --dataset AAV_hard --seed_file ../rand_seeds.txt --num_seeds 5
+  # The 30-seed benchmark standard
+  python ../scripts/alphavariant/run_generic.py --dataset 4site_GB1 \
+      --seed_file ../rand_seeds.txt --num_seeds 30
 
   # Skip metrics computation
-  python run_generic.py --dataset AAV_med --seed 42 --skip_metrics
+  python ../scripts/alphavariant/run_generic.py --dataset 4site_GB1 --seed 621 --skip_metrics
 
   # Custom output path
-  python run_generic.py --dataset my_protein --output_path results/my_experiment/
+  python ../scripts/alphavariant/run_generic.py --dataset ms_PAB1 --output_path results/my_experiment/
         """
     )
 

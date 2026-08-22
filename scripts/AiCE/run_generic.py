@@ -20,20 +20,20 @@ Metrics computed (same as ALDE for comparison):
     - Success: Simple Regret
 
 Usage:
-    # Single run on AAV_med
-    python run_generic.py --dataset AAV_med --seed 42
+    # Single run on 4site_GB1
+    AiCE/env/bin/python scripts/AiCE/run_generic.py --dataset 4site_GB1 --seed 42
 
     # Multiple runs on GB1
-    python run_generic.py --dataset GB1 --seeds 42 123 456 789 1000
+    AiCE/env/bin/python scripts/AiCE/run_generic.py --dataset 4site_GB1 --seeds 42 123 456 789 1000
 
     # Use predefined seeds from file (50 runs)
-    python run_generic.py --dataset GFP_med --seed_file ../rand_seeds.txt --num_seeds 50
+    AiCE/env/bin/python scripts/AiCE/run_generic.py --dataset 4site_TRPB --seed_file rand_seeds.txt --num_seeds 30
 
     # Skip metrics computation (faster)
-    python run_generic.py --dataset AAV_hard --seed 42 --skip_metrics
+    AiCE/env/bin/python scripts/AiCE/run_generic.py --dataset 4site_PhoQ --seed 42 --skip_metrics
 
     # Custom output path
-    python run_generic.py --dataset GB1 --seed 42 --output_path results/GB1_AiCE/
+    AiCE/env/bin/python scripts/AiCE/run_generic.py --dataset 4site_GB1 --seed 42 --output_path results/4site_GB1_AiCE/
 """
 
 from __future__ import annotations
@@ -1017,20 +1017,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single run on AAV_med
-  python run_generic.py --dataset AAV_med --seed 42
+  # Single run on 4site_GB1
+  AiCE/env/bin/python scripts/AiCE/run_generic.py --dataset 4site_GB1 --seed 42
 
   # Multiple runs on GB1
-  python run_generic.py --dataset GB1 --seeds 42 123 456 789 1000
+  AiCE/env/bin/python scripts/AiCE/run_generic.py --dataset 4site_GB1 --seeds 42 123 456 789 1000
 
   # Load seeds from file (50 runs)
-  python run_generic.py --dataset GFP_med --seed_file ../rand_seeds.txt --num_seeds 50
+  AiCE/env/bin/python scripts/AiCE/run_generic.py --dataset 4site_TRPB --seed_file rand_seeds.txt --num_seeds 30
 
   # Skip metrics computation
-  python run_generic.py --dataset AAV_hard --seed 42 --skip_metrics
+  AiCE/env/bin/python scripts/AiCE/run_generic.py --dataset 4site_PhoQ --seed 42 --skip_metrics
 
   # Custom output path
-  python run_generic.py --dataset GB1 --seed 42 --output_path results/GB1_AiCE/
+  AiCE/env/bin/python scripts/AiCE/run_generic.py --dataset 4site_GB1 --seed 42 --output_path results/4site_GB1_AiCE/
         """
     )
 
@@ -1039,7 +1039,7 @@ Examples:
         "--dataset",
         type=str,
         required=True,
-        help="Dataset name (subdirectory under data_dir, e.g. GB1, AAV_med, AAV_hard, GFP_med)"
+        help="Dataset name (subdirectory under data_dir, e.g. 4site_GB1, 4site_PhoQ, 4site_TRPB)"
     )
 
     # Seed configuration

@@ -22,7 +22,7 @@ Methods:
 
 Usage:
     python scripts/run_oracle_benchmark.py --method ALDE --dataset ms_CreiLOV --seed 42
-    python scripts/run_oracle_benchmark.py --method Random --dataset ms_GFP --seeds 42 43 44
+    python scripts/run_oracle_benchmark.py --method Random --dataset ms_CreiLOV --seeds 621 100 383
 """
 
 from __future__ import annotations
