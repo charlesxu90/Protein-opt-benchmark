@@ -281,13 +281,31 @@ Only **two** metrics are scored, both over the 480 queried sequences of a run an
 
 Across the 30 seeds each is reported as median + IQR (Q1/Q3), and the ranking panels rank on that per-dataset median. Everything else `utils/metrics.py` emits (diversity, novelty, calibration, surrogate correlation) is diagnostic and is **not** used for ranking — don't introduce it into headline comparisons.
 
-## Adding a New Run Script
+## Adding a New Method
 
-1. Create `scripts/<method>/run_<dataset>.py` as a thin wrapper that injects `--dataset` and calls `run_generic.main()`
-2. Import utils via compat or direct pattern (see above)
-3. Run it: `<method>/env/bin/python scripts/<method>/run_<dataset>.py --seed 621`
+1. Create `scripts/<method>/run_generic.py` with the `BENCHMARK_ROOT` bootstrap above; take `--dataset` and the shared flags, never hardcode a dataset
+2. Import utils via the compat or direct pattern (see above)
+3. Anchor `--output_path` at `<Method>/results/<dataset>_<method>/` so `utils/seed_values.py` can find the per-seed JSONs
+4. Run it: `<method>/env/bin/python scripts/<method>/run_generic.py --dataset 4site_GB1 --seed 621`
+5. Add the method's result-path pattern to `utils/seed_values.py` — otherwise it is invisible to the figures
 
-Only live datasets get wrappers — see the dataset table above. Nothing to symlink or register.
+Do **not** add per-dataset wrapper scripts. Nothing to symlink or register.
+
+## What Lives in `scripts/`
+
+After the cleanup, everything here is live — if a script exists, it is either a producer of current results or part of the figure chain. Do not add one-off sweep or tuning scripts to the tree.
+
+| Group | Files |
+|---|---|
+| Per-method runners | `<method>/run_generic.py` × 9 (+ `alphavariant/run_generic.py`, `train_ms_prior.py`, `align_homologs.py`) |
+| Panel drivers | `run_oracle_benchmark.py` (Panel B), `run_4site_benchmark.py` (see caveat below) |
+| Data / model prep | `prepare_combingym.py`, `prepare_proteingym.py`, `train_oracle.py`, `compute_mpnn_freqs.py`, `EVOLVEpro/embed_dataset.py`, `compute_dataset_checksums.py`, `setup_baseline_envs.sh` |
+| Aggregation | `aggregate_oracle_results.py`, `build_oracle_median_iqr_csv.py`, `build_median_iqr_csv.py`, `build_trajectory_dataset.py`, `summarize_ablation.py`, `aggregate_metrics.py` |
+| Significance | `compute_oracle_wilcoxon.py` (both panels), `compute_planC_wilcoxon.py` (ablations) |
+| Figures | `draw_ranking_panel.py`, `draw_raincloud_figures.py`, `draw_trajectory_figures.py`, `draw_supplementary_ablation.py`, `plot_oracle_diagnostics.py`, `plot_4site_density.py` |
+| Sweep provenance | `alphavariant/run_ev_onehot.sh`, `_run_30seed_evonehot.sh`, `_rerun_4site_newcode.sh`, `_ablation_*.sh` × 4, `_ms_finetune_*.sh` × 2 |
+
+The `_ablation_*.sh` and `_ms_finetune_*.sh` shells are the provenance of `results_ablation/`, which feeds `ablation_summary.csv` — keep them even though they look like one-offs.
 
 ## Analysis and Reporting
 
@@ -316,6 +334,26 @@ python scripts/summarize_ablation.py                       # -> results_ablation
 ```
 
 AlphaVariant leave-one-out ablations live in `results_ablation/<prefix>_<config>/`, where `full` is the default configuration used in the headline figures and the others switch one component off. Four-site: `no_mcreward`, `no_shap`, `bare`. Multi-site: `no_ev`, `no_shap`, `no_cap`, `no_prior`. They feed the supplementary ablation figure only.
+
+## Reproducibility Status (audited 2026-08-22)
+
+Every tracked artifact was recomputed from raw per-seed files. **Panel B and the ablations are fully reproducible; Panel A has a known provenance gap.** Read this before regenerating any figure.
+
+Reproduces exactly:
+- `figures/ms_oracles/multisite_oracle_median_iqr.csv` — 40/40 rows from `results_oracle/<ds>/<method>/seed*.json`
+- `results_ablation/ablation_summary.csv` — 36/36 rows; re-running `summarize_ablation.py` is byte-identical
+- All `ranking_panel_*_values.csv` and `wilcoxon_pairwise_*` — byte-identical on re-run
+- `alphavariant_trajectory_per_seed.csv` — 3 datasets × 30 seeds × 5 rounds
+- Panel A **competitor** rows (9 methods) in `figures/alphavariant_comparison_median_iqr.csv`
+
+Does **not** reproduce — do not silently regenerate:
+- **The AlphaVariant rows of `figures/alphavariant_comparison_median_iqr.csv` match no directory on disk.** They sit between `_archive_tier1B_canonical`, `_mc_shap_winner` and `_shap_late`, consistent with the CSV predating `_rerun_4site_newcode.sh`. Regenerating this CSV **will change published Panel A AlphaVariant numbers** (e.g. PhoQ median 0.4635 → 0.5256).
+- **Panel A disagrees with itself about which config "AlphaVariant" is.** The ranking panel reads that CSV; the raincloud, 4-site Wilcoxon and 4-site trajectory all read `_archive_tier1B_canonical` (hardcoded in `utils/seed_values.py` and `scripts/draw_trajectory_figures.py`) — the *base* config, not the documented `mc_shap_winner` default. They differ materially on TrpB (0.8842 vs 0.8326).
+- `delta_cs` rows (4) — source directory removed with the method.
+
+Also note Panel A per-seed data lives in `<Method>/results/` and `alphavariant/results/`, **not** under `results_*/`. Only Panel B and the ablations satisfy "all results reproducible from `results_*`".
+
+Regenerating figures is non-deterministic at the byte level (PDF metadata), so `git checkout -- figures/` after a verification run rather than committing the churn.
 
 ## Broken / Legacy — do not use
 
