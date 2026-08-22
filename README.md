@@ -71,22 +71,36 @@ documentation: `data/README.md`.
 
 ## 2. Methods
 
-Ten methods in the headline comparison. `FLEXS` (Panel A) and `AdaLead`
-(Panel B) are the same AdaLead algorithm and are unified under **AdaLead** in
-the figures.
+Ten methods in the headline comparison. Each bullet gives what the method
+does and the conda env it runs under. `FLEXS` (Panel A) and `AdaLead` (Panel B)
+are the same AdaLead algorithm and are unified under **AdaLead** in the figures.
 
-| Method | Family | PLM | RL | Structure | Env |
-|---|---|:-:|:-:|:-:|---|
-| **Random** | Uniform sampling baseline | — | — | — | reuses `ALDE/env` |
-| **GreedyWalk** | Single-mutant hill climbing | — | — | — | reuses `ALDE/env` |
-| **ALDE** | Bayesian active learning (ensemble + Thompson sampling) | — | — | — | `ALDE/env` |
-| **AdaLead** (FLEXS) | Adaptive greedy model-guided search | — | — | — | `FLEXS/env` |
-| **ftMLDE** | Supervised MLDE, CV-selected regressor zoo | optional | — | — | `ftMLDE/env` |
-| **CLADE 2.0** | Cluster-based MLDE (k-means diversity) | optional | — | — | `CLADE/env` → `ALDE/env` |
-| **MULTIevolve** | Supervised + epistasis-aware batch design | optional | — | — | `MULTIevolve/env` |
-| **EVOLVEpro** | Few-shot active learning on frozen ESM-2 embeddings | ESM-2 | — | — | `EVOLVEpro/env` |
-| **AiCE** | Inverse folding + evolutionary frequency filtering | ESM | — | ProteinMPNN | `AiCE/env` |
-| **AlphaVariant** | VariantGPT generative + REINFORCE + surrogate ensemble | VariantGPT | ✓ | MutCompute | `~/miniforge3/envs/alphavariant-env` |
+- **Random** — uniform sampling from the design space, no model. The floor every
+  other method has to beat. *Env:* reuses `ALDE/env`.
+- **GreedyWalk** — hill climbing: each round takes single-mutant neighbours of
+  the best sequence found so far. *Env:* reuses `ALDE/env`.
+- **ALDE** — Bayesian active learning. Fits an ensemble surrogate on everything
+  measured so far and picks the next batch by Thompson sampling. *Env:* `ALDE/env`.
+- **AdaLead** (FLEXS) — adaptive greedy model-guided search: mutate-and-screen
+  around the current top hits, with the surrogate acting as a cheap filter.
+  *Env:* `FLEXS/env` (Panel A); the Panel B driver runs it under `ALDE/env`.
+- **ftMLDE** — focused-training MLDE. Trains a zoo of regressors on the measured
+  variants, cross-validates to pick the best one, then screens the pool with it.
+  *Env:* `ftMLDE/env`.
+- **CLADE 2.0** — cluster-based MLDE. k-means the sequence space and spend the
+  batch across clusters, so the surrogate is trained on a spread of the
+  landscape rather than one basin. *Env:* `CLADE/env` (symlink to `ALDE/env`).
+- **MULTIevolve** — supervised batch design that explicitly models epistasis
+  between candidate mutations when assembling multi-mutant batches.
+  *Env:* `MULTIevolve/env`.
+- **EVOLVEpro** — few-shot active learning on frozen ESM-2 embeddings: a light
+  top-N regressor over PLM features, no fine-tuning. *Env:* `EVOLVEpro/env`
+  (the Panel B driver needs the transformers/ESM stack from `alphavariant-env`).
+- **AiCE** — structure-aware and largely zero-shot: ProteinMPNN inverse-folding
+  residue probabilities, filtered by evolutionary frequency. *Env:* `AiCE/env`.
+- **AlphaVariant** — VariantGPT generates candidates and is trained with
+  REINFORCE against a surrogate ensemble, with MutCompute reward shaping and
+  SHAP alphabet pruning (§3). *Env:* `/home/xux/miniforge3/envs/alphavariant-env`.
 
 **Current results** (mean rank across each panel's 3 datasets, max fitness —
 `figures/ranking_panel_*_max_fitness_values.csv`):
@@ -321,7 +335,7 @@ supplementary ablation figure only — the main curves are always `full`.
 
 ```
 Benchmark/
-├── README.md  CLAUDE.md  INTEGRATION.md
+├── README.md  CLAUDE.md
 ├── rand_seeds.txt                  # 500 seeds; the benchmark uses the first 30
 │
 ├── utils/                          # unified benchmark library
@@ -386,13 +400,9 @@ the working directory.
 
 ### Environments
 
-One conda env per method (Python versions differ):
-
-| Method | Env |
-|---|---|
-| ALDE, AiCE, FLEXS, CLADE, ftMLDE, EVOLVEpro, MULTIevolve | `<method>/env` |
-| Random, GreedyWalk | reuse `ALDE/env` (pure Python, no GPU) |
-| AlphaVariant | `/home/xux/miniforge3/envs/alphavariant-env` |
+One conda env per method, Python versions differ, and they are not
+interchangeable — always invoke `<method>/env/bin/python` rather than
+`conda activate`. Per-method paths are listed with each method in §2.
 
 `scripts/setup_baseline_envs.sh` builds the three later additions
 (`EVOLVEpro`, `ftMLDE`, `MULTIevolve`) from their upstream `environment.yml`

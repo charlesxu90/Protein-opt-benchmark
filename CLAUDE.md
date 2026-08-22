@@ -207,7 +207,7 @@ Earlier revisions symlinked these scripts into each method dir and synced them w
 
 ## Git Tracking
 
-- **Tracked:** `scripts/`, `utils/`, `oracles/` (including the `oracle.pt` checkpoints), `figures/`, `README.md`, `CLAUDE.md`, `INTEGRATION.md`, `rand_seeds.txt`, and the two documentation files inside the otherwise-ignored `data/`: `data/README.md` and `data/CHECKSUMS.txt`
+- **Tracked:** `scripts/`, `utils/`, `oracles/` (including the `oracle.pt` checkpoints), `figures/`, `README.md`, `CLAUDE.md`, `rand_seeds.txt`, and the two documentation files inside the otherwise-ignored `data/`: `data/README.md` and `data/CHECKSUMS.txt`
 - **Tracked directly (non-submodule method dirs):** `ALDE/`, `AiCE/`, `FLEXS/`, `Random/`, `GreedyWalk/` — upstream code only (`Random/` and `GreedyWalk/` have no upstream code at all and now exist purely to hold `results/`)
 - **Submodules** (`.gitmodules`): `alphavariant`, `CLADE`, `ftMLDE`, `EVOLVEpro`, `MULTIevolve`. Commits to these show up as one-line pointer bumps; commit inside the submodule first, then bump here.
 - **Ignored:** `data/`, `results/`, `results_*/` (so `results_oracle/`, `results_ablation/`, `results_backups/`), `sweep_logs/`, `env/`, `output/`, `_logs/`
