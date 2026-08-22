@@ -28,9 +28,9 @@ library and are scored against the measured fitness.
 
 ### Panel B — Multi-site, learned oracle (generative proposal)
 
-Sparse/variable landscapes where exhaustive lookup is impossible. A GGS /
-LatProtRL-style `BaseCNN` oracle is trained on the full dataset and then used as
-the fitness function; methods propose sequences rather than pick table rows.
+Sparse/variable landscapes where exhaustive lookup is impossible. A `BaseCNN`
+oracle is trained on the full dataset and then used as the fitness function;
+methods propose sequences rather than pick table rows.
 
 | Dataset | n | Seq len | Varying positions | Fitness range | Oracle test ρ |
 |---|---:|---:|---:|---|---:|
@@ -251,34 +251,29 @@ python scripts/EVOLVEpro/embed_dataset.py --dataset 4site_GB1
 
 ## 4. Metrics
 
-Two levels of metric reporting coexist by design.
+The benchmark is scored on **two** metrics, both computed over the 480 queried
+sequences of a run and normalized to [0, 1] by the dataset's global maximum
+(Panel A) or the oracle's `fit_min`/`fit_max` (Panel B):
 
-**Headline metrics** (both panel drivers, and what the figures rank on):
-`max_fitness_norm`, `top128_mean_norm`, `mean_all_norm`, `diversity_top128`,
-`novelty_top128_vs_wt`, `best_n_muts`, `fitness_trajectory` (per-round best).
+| Metric | Field | Definition |
+|---|---|---|
+| **Max fitness** | `max_fitness_norm` | The single best fitness the run discovered |
+| **Top-128 mean fitness** | `top128_mean_norm` | Mean fitness of the run's 128 best sequences |
 
-**Full 15-field suite** (`utils/metrics.py`, emitted by every per-method
-`run_generic.py`):
+Max fitness asks whether a method found the peak; top-128 mean asks whether the
+whole batch it committed to was good.
 
-| Metric | Description | Reference | Range |
-|---|---|---|---|
-| High-Fitness Proximity (`high_fitness_proximity`) | Median min distance from generated sequences to the top-10% fitness set | LatProtRL | 0+ (lower better) |
-| Novelty (`novelty`) | Median min distance to the initial training set | LatProtRL | 0+ (higher better) |
-| Batch Diversity (`batch_diversity`) | Median pairwise distance within the generated batch | Energy Matching | 0+ (higher better) |
-| Normalized Fitness Top-128 / Top-256 | Median fitness of the top 128 / 256 queried, normalized to [0,1] | GGS | [0, 1] |
-| Max Fitness (`max_fitness`) | Highest fitness discovered (normalized) | δ-CS | [0, 1] |
-| Spearman Correlation | Rank correlation, surrogate prediction vs. true fitness | µProtein | [-1, 1] |
-| Epistatic Correlation | Spearman correlation of non-additive mutational effects | µProtein | [-1, 1] |
-| Recall of High-Order Mutants | Fraction of true top multi-point mutants recovered | µProtein | [0, 1] |
-| Simple Regret | Gap between global optimum and best found | VSD | 0+ (lower better) |
-| Global Max Found (`global_max_found`) | Whether the run hit the global optimum | EvoPlay | bool / count |
-| Miscalibration Area | Area between the calibration curve and the ideal diagonal | ALDE | [0, 1] |
-| Expected Calibration Error | Weighted average of calibration errors | ALDE | [0, 1] |
-| AUOC (`auoc`) | Area under the optimization curve | — | [0, 1] |
-| Hit Rate | Fraction of queries above a fitness threshold | — | [0, 1] |
+Across the 30 seeds, each metric is reported as **median + IQR (Q1/Q3)**, and
+the ranking panels rank methods by that per-dataset median. Both are emitted by
+the two panel drivers and land in
+`figures/alphavariant_comparison_median_iqr.csv` (Panel A) and
+`figures/ms_oracles/multisite_oracle_median_iqr.csv` (Panel B).
 
-Distance functions: `levenshtein` (default; variable-length safe) or `hamming`
-(equal-length only).
+The per-method `run_generic.py` scripts additionally write a wider set of
+diagnostic fields (diversity, novelty, calibration, surrogate correlation) to
+`metrics_seed<S>.json` — see `utils/metrics.py`; the distance-based ones use
+`levenshtein` (default, variable-length safe) or `hamming` (equal-length only).
+None of them are used for ranking.
 
 ---
 
@@ -458,45 +453,7 @@ hits, rate = global_max_hit_count([r.max_fitness for r in runs],
 
 ---
 
-## 8. Requirements
-
-```
-numpy>=1.20   scipy>=1.7   pandas>=1.3   torch>=1.9
-scikit-learn>=1.0          # surrogate ensembles (ftMLDE/CLADE/ALDE/AlphaVariant)
-matplotlib                 # figures
-shap                       # AlphaVariant alphabet pruning
-transformers / fair-esm    # EVOLVEpro, AiCE, AlphaVariant PLM paths
-```
-
-Per-method pins are in each `scripts/<method>/Environment.md` /
-`environment.yml`; do not mix envs.
-
----
-
-## 9. Legacy artifacts
-
-The tree retains material from earlier benchmark revisions. Do not treat it as
-current:
-
-- `4site_TEV` and `ms_GFP` were dropped from the headline panels. Rows for them
-  survive in `figures/*median_iqr.csv`, `results_oracle/ms_GFP/`,
-  `oracles/ms_GFP/` and `docs/ablation_summary.csv`, but the ranking panels and
-  Wilcoxon tables cover 3 datasets per panel.
-- `tables/_all_datasets_summary.md` describes the older, wider dataset/method
-  panel (CombinGym multi-objective sets, `delta_cs`, `EvoPlay`, `LatProtRL`,
-  `Mu-Protein`). `data/README.md` is current.
-- `scripts/run_sweep_parallel.py` and `scripts/run_30seed_gb1_sweep.sh` call a
-  `scripts/hpc/launch.py` that is no longer in the tree; the live sweep
-  launchers are the per-method shell scripts under `scripts/alphavariant/` and
-  direct driver invocations.
-- `scripts/generate_tables.py` and `scripts/plotting/` are hard-coded to the
-  old dataset names (`GB1`, `AAV_med`, `GFP_med`, `GFP_hard`) and will not find
-  current results. Use the `build_*_median_iqr_csv.py` → `draw_*.py` chain in §5
-  instead.
-
----
-
-## 10. References
+## 8. References
 
 | | |
 |---|---|
@@ -508,10 +465,6 @@ current:
 | MULTI-evolve | Multi-mutation epistasis-aware batch design |
 | AiCE | Inverse-folding (ProteinMPNN) guided combinatorial editing |
 | AlphaVariant | VariantGPT generative optimization + REINFORCE |
-| GGS | Kirjner *et al.* 2024, smoothed-landscape oracle protocol + normalized fitness metrics |
-| LatProtRL | Latent-space RL; proximity / novelty metrics |
-| µProtein | Model-quality metrics (Spearman, epistatic, high-order recall) |
-| VSD | Variational search distribution; simple regret |
 | Datasets | GB1: Wu *et al.* 2016 · PhoQ: Podgornaia & Laub 2015 · TrpB: Johnston *et al.* 2024 · AAV: Bryant *et al.* 2021 · CreiLOV: Chen *et al.* 2023 · PAB1: Melamed *et al.* 2013 |
 
 Full citations: `docs/methods_readme.md` §5.
