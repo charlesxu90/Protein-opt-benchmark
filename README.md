@@ -42,12 +42,24 @@ Oracle checkpoints live in `oracles/<dataset>/oracle.pt` (+ `oracle_meta.json`
 carrying `fit_min` / `fit_max` for de-normalization). Held-out test metrics:
 `figures/ms_oracles/oracle_test_metrics.csv`.
 
-Each dataset directory carries the artifacts its methods need — `wt.fasta`,
-`varying_positions.txt`, a structure (`*.pdb`) for ProteinMPNN/MutCompute,
-`mutcompute.csv`, `aice_mpnn_freq.npz`, `plmc/` (EVmutation couplings),
-`align/` + `prior_aligned.csv` (homolog alignment for the AlphaVariant prior),
-and `embeddings_evolvepro.pt` (frozen ESM-2 embeddings).
-`sha256sum -c data/CHECKSUMS.txt` verifies every shipped `data.csv`.
+### Dataset directory contents
+
+Every `data/<dataset>/` holds `data.csv` (columns `seq`, `fitness`, plus
+`AACombo` / `n_muts`), `wt.fasta`, a structure `*.pdb` and `mutcompute.csv`.
+The remaining artifacts are panel-specific:
+
+| Artifact | Panel A | Panel B | Consumer |
+|---|:-:|:-:|---|
+| `embeddings_evolvepro.pt` + `labels_evolvepro.csv` | ✓ | — | EVOLVEpro (frozen ESM-2 embeddings) |
+| `varying_positions.txt` + `target_seqs.fasta` | — | ✓ | design space for the oracle panel |
+| `plmc/` | — | ✓ | EVmutation couplings (AlphaVariant `ev_onehot`) |
+| `prior_aligned.csv` | — | ✓ | homolog alignment for the AlphaVariant prior |
+| `aice_mpnn_freq.npz` | — | ✓ | AiCE ProteinMPNN residue frequencies |
+
+`data/` is git-ignored (182 MB of CSVs); regenerate it with
+`scripts/prepare_combingym.py` / `scripts/prepare_proteingym.py` and verify with
+`sha256sum -c data/CHECKSUMS.txt` from the benchmark root. Full per-file
+documentation: `data/README.md`.
 
 ### Shared protocol
 
@@ -153,11 +165,15 @@ python scripts/run_4site_benchmark.py --method ftMLDE --dataset 4site_GB1 --seed
 
 Panel B output: `results_oracle/<dataset>/<method>/seed<S>.json`.
 
-### AlphaVariant (Plan C — shipped)
+### AlphaVariant
 
-AlphaVariant ships the **Plan C** configuration: base GPT-REINFORCE + surrogate
-ensemble with **MutCompute** (structure-based zero-shot) reward shaping and
-**SHAP** per-position alphabet pruning. Flags differ between the two panels.
+One configuration is used throughout — it is the default, and it is what every
+AlphaVariant curve and point in the benchmark figures comes from: GPT-REINFORCE
+generation + surrogate ensemble, with **MutCompute** (structure-based zero-shot)
+reward shaping and **SHAP** per-position alphabet pruning. The two command
+lines below are the exact ones behind those results; the flag table says which
+flags apply to which panel.
+
 Paths passed on the command line (`--prior_model_path`, `--data_dir`) are
 relative to the working directory, so the examples below `cd alphavariant`
 first; the script itself works from anywhere.
@@ -210,7 +226,8 @@ Panel B priors are trained per dataset with
 Sweep launchers: `scripts/alphavariant/run_ev_onehot.sh` and
 `_run_30seed_evonehot.sh` (Panel B), `_rerun_4site_newcode.sh` (Panel A).
 
-Shipped results: `alphavariant/results/<dataset>_AlphaVariant_mc_shap_winner/seed_*/metrics.json`
+Per-seed results (the ones the figures read):
+`alphavariant/results/<dataset>_AlphaVariant_mc_shap_winner/seed_*/metrics.json`
 (Panel A) and `results_oracle/<dataset>/AlphaVariant/seed*.json` (Panel B).
 
 ### Training the pieces from scratch
@@ -271,7 +288,7 @@ Distance functions: `levenshtein` (default; variable-length safe) or `hamming`
 # --- aggregate per-seed JSON -> tidy median/IQR CSVs -------------------------
 python scripts/aggregate_oracle_results.py                # results_oracle/ -> figures/ms_oracles/
 python scripts/build_oracle_median_iqr_csv.py             # multisite_oracle_median_iqr.csv
-python scripts/build_median_iqr_csv.py --plans C          # four-site, per AlphaVariant plan
+python scripts/build_median_iqr_csv.py --plans C          # four-site medians/IQRs
 
 # single-dataset / single-seed cross-method metric dump (all 15 fields)
 python scripts/aggregate_metrics.py --dataset 4site_GB1 --seed 621
@@ -296,9 +313,15 @@ python scripts/summarize_ablation.py                      # docs/ablation_summar
 Figure style is centralized in `utils/plot_style_utils.py`
 (`apply_nature_rcparams`, `save_figure`).
 
-AlphaVariant leave-one-out ablations live in `results_ablation/<prefix>_<config>/`.
-Panel A configs: `full` (Plan C), `no_mcreward`, `no_shap`, `bare`.
-Panel B configs: `full`, `no_ev`, `no_shap`, `no_cap`, `no_prior`.
+The `--plans C` flag and the `planC` in `compute_planC_wilcoxon.py` are
+historical names for AlphaVariant's default configuration (§3); pass/run them
+as shown.
+
+AlphaVariant leave-one-out ablations live in `results_ablation/<prefix>_<config>/`,
+where `full` is the default configuration used in the headline figures and the
+others switch one component off (Panel A: `no_mcreward`, `no_shap`, `bare`;
+Panel B: `no_ev`, `no_shap`, `no_cap`, `no_prior`). These feed the
+supplementary ablation figure only — the main curves are always `full`.
 
 ---
 
@@ -459,9 +482,9 @@ current:
   survive in `figures/*median_iqr.csv`, `results_oracle/ms_GFP/`,
   `oracles/ms_GFP/` and `docs/ablation_summary.csv`, but the ranking panels and
   Wilcoxon tables cover 3 datasets per panel.
-- `data/README.md` and `tables/_all_datasets_summary.md` describe the older,
-  wider dataset/method panel (CombinGym multi-objective sets, `delta_cs`,
-  `EvoPlay`, `LatProtRL`, `Mu-Protein`).
+- `tables/_all_datasets_summary.md` describes the older, wider dataset/method
+  panel (CombinGym multi-objective sets, `delta_cs`, `EvoPlay`, `LatProtRL`,
+  `Mu-Protein`). `data/README.md` is current.
 - `scripts/run_sweep_parallel.py` and `scripts/run_30seed_gb1_sweep.sh` call a
   `scripts/hpc/launch.py` that is no longer in the tree; the live sweep
   launchers are the per-method shell scripts under `scripts/alphavariant/` and
