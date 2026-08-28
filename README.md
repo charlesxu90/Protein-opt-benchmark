@@ -457,7 +457,12 @@ hits, rate = global_max_hit_count([r.max_fitness for r in runs],
 
 ---
 
-## 8. References
+## Licenses
+This software is open-sourced under [![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+
+---
+
+## References
 
 | | |
 |---|---|
